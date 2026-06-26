@@ -1,0 +1,60 @@
+{
+  "platform": {
+    "executable_path": "C:/dlcv/Lib/site-packages/dlcv_train/DLCV AI Training Platform-win_x64.exe",
+    "backend_url": "http://127.0.0.1:9887",
+    "backend_ready_timeout": 300,
+    "backend_ready_interval": 2
+  },
+  "project": {
+    "name": "OCR-Auto-Test",
+    "task_type": "OCR",
+    "description": "自动化 OCR 训练项目",
+    "dataset_dir": "C:/Users/Admin/kimi_gui_automation/AI训练平台测试/1-OCR/训练集",
+    "work_dir": "C:/Users/Admin/kimi_gui_automation/AI训练平台测试/1-OCR/work",
+    "dva_file": "C:/Users/Admin/kimi_gui_automation/AI训练平台测试/1-OCR/OCR-Auto-Test.dva"
+  },
+  "training": {
+    "auto_start": true,
+    "monitor_until_complete": true,
+    "monitor_interval": 10,
+    "monitor_timeout": 3600,
+    "hyperparameters": {
+      "train_set_val": 80,
+      "val_set_val": 20,
+      "copy_times": 1,
+      "max_epochs": 12,
+      "val_interval": 1,
+      "save_error_data": false,
+      "weight_decay": 0.0001,
+      "auto_deploy": false,
+      "keep_consistency": false,
+      "random_seed": 42,
+      "use_thread_dataloader": true,
+      "val_num_workers": 1,
+      "distill_ratio": 0.2,
+      "img_scale": {
+        "width": 1280,
+        "height": 48
+      },
+      "batch_size": 8,
+      "lr": 0.0001,
+      "enable_fp16": false,
+      "train_num_workers": 1
+    }
+  },
+  "dataset": {
+    "auto_detect": true
+  },
+  "webbridge": {
+    "enabled": true,
+    "adapter": "playwright",
+    "frontend_url": "http://localhost:8843",
+    "timeout": 120,
+    "frontend_ready_timeout": 60,
+    "frontend_ready_interval": 1,
+    "screenshot_dir": "./webbridge_screenshots",
+    "headless": false,
+    "browser": "chromium",
+    "slow_mo": 50
+  }
+}
