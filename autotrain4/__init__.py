@@ -1,0 +1,10 @@
+"""DLCV AutoTrain 4.0 共享模块包。"""
+
+from .common import TASK_ALIASES, TASK_TEMPLATES, TASK_FOLDER_KEYWORDS, DATASET_CANDIDATES
+
+__all__ = [
+    "TASK_ALIASES",
+    "TASK_TEMPLATES",
+    "TASK_FOLDER_KEYWORDS",
+    "DATASET_CANDIDATES",
+]
