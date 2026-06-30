@@ -1,0 +1,76 @@
+{
+  "_comment": "语义分割任务自动化配置示例。数据集路径指向 AI训练平台测试/6-SSEG。",
+  "platform": {
+    "executable_path": "C:\\dlcv\\Lib\\site-packages\\dlcv_train\\DLCV AI Training Platform-win_x64.exe",
+    "backend_url": "http://127.0.0.1:9887",
+    "backend_ready_timeout": 300,
+    "backend_ready_interval": 2.0
+  },
+  "project": {
+    "name": "6-SSEG-20260629_144600",
+    "task_type": "语义分割",
+    "description": "自动化语义分割训练项目",
+    "dataset_dir": "C:\\Users\\Admin\\kimi_gui_automation\\AI训练平台测试\\6-SSEG\\训练集",
+    "work_dir": "C:\\Users\\Admin\\kimi_gui_automation\\AI训练平台测试\\6-SSEG\\work",
+    "dva_file": "C:\\Users\\Admin\\kimi_gui_automation\\AI训练平台测试\\6-SSEG\\6-SSEG-20260629_144600.dva"
+  },
+  "training": {
+    "auto_start": true,
+    "monitor_until_complete": true,
+    "monitor_interval": 10,
+    "monitor_timeout": 0,
+    "hyperparameters": {
+      "train_set_val": 80,
+      "val_set_val": 20,
+      "copy_times": 1,
+      "max_epochs": 12,
+      "val_interval": 1,
+      "save_error_data": false,
+      "use_ok_images": false,
+      "weight_decay": 0.0001,
+      "auto_deploy": false,
+      "keep_consistency": false,
+      "random_seed": 42,
+      "use_thread_dataloader": true,
+      "val_num_workers": 1,
+      "img_scale": {
+        "width": 640,
+        "height": 640
+      },
+      "batch_size": 2,
+      "lr": 0.001,
+      "enable_fp16": true,
+      "train_num_workers": 2,
+      "model_name": "工业场景模型",
+      "data_augmentation": [
+        {
+          "type": "Resize",
+          "scale": [
+            640,
+            640
+          ],
+          "keep_ratio": false
+        }
+      ]
+    }
+  },
+  "dataset": {
+    "auto_detect": true,
+    "resolved_categories": [
+      "1-训练集"
+    ],
+    "matched_user_categories": {}
+  },
+  "webbridge": {
+    "enabled": true,
+    "adapter": "playwright",
+    "frontend_url": "http://localhost:8843",
+    "timeout": 120,
+    "frontend_ready_timeout": 60,
+    "frontend_ready_interval": 1,
+    "screenshot_dir": "./webbridge_screenshots",
+    "headless": false,
+    "browser": "chromium",
+    "slow_mo": 50
+  }
+}

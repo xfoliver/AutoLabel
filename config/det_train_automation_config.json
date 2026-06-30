@@ -10,9 +10,9 @@
     "name": "DET-Auto-Test",
     "task_type": "目标检测",
     "description": "自动化目标检测训练项目",
-    "dataset_dir": "C:/Users/Admin/kimi_gui_automation/AI训练平台测试/3-DET/训练集",
-    "work_dir": "C:/Users/Admin/kimi_gui_automation/AI训练平台测试/3-DET/work",
-    "dva_file": "C:/Users/Admin/kimi_gui_automation/AI训练平台测试/3-DET/DET-Auto-Test.dva"
+    "dataset_dir": "Y:/zzh/AI训练平台测试/3-DET/训练集",
+    "work_dir": "Y:/zzh/AI训练平台测试/3-DET/work",
+    "dva_file": "Y:/zzh/AI训练平台测试/3-DET/DET-Auto-Test.dva"
   },
   "training": {
     "auto_start": true,

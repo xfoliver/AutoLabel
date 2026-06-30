@@ -10,9 +10,9 @@
     "name": "ROTATE-Auto-Test",
     "task_type": "旋转框检测",
     "description": "自动化旋转框检测训练项目",
-    "dataset_dir": "C:/Users/Admin/kimi_gui_automation/AI训练平台测试/7-ROTATE/训练集",
-    "work_dir": "C:/Users/Admin/kimi_gui_automation/AI训练平台测试/7-ROTATE/work",
-    "dva_file": "C:/Users/Admin/kimi_gui_automation/AI训练平台测试/7-ROTATE/ROTATE-Auto-Test.dva"
+    "dataset_dir": "Y:/zzh/AI训练平台测试/7-ROTATE/训练集",
+    "work_dir": "Y:/zzh/AI训练平台测试/7-ROTATE/work",
+    "dva_file": "Y:/zzh/AI训练平台测试/7-ROTATE/ROTATE-Auto-Test.dva"
   },
   "training": {
     "auto_start": true,

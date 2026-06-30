@@ -10,9 +10,9 @@
     "name": "CLS-Auto-Test",
     "task_type": "分类",
     "description": "自动化分类训练项目",
-    "dataset_dir": "C:/Users/Admin/kimi_gui_automation/AI训练平台测试/2-CLS/训练集",
-    "work_dir": "C:/Users/Admin/kimi_gui_automation/AI训练平台测试/2-CLS/work",
-    "dva_file": "C:/Users/Admin/kimi_gui_automation/AI训练平台测试/2-CLS/CLS-Auto-Test.dva"
+    "dataset_dir": "Y:/zzh/AI训练平台测试/2-CLS/训练集",
+    "work_dir": "Y:/zzh/AI训练平台测试/2-CLS/work",
+    "dva_file": "Y:/zzh/AI训练平台测试/2-CLS/CLS-Auto-Test.dva"
   },
   "training": {
     "auto_start": true,

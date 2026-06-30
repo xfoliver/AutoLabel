@@ -7,12 +7,12 @@
     "backend_ready_interval": 2.0
   },
   "project": {
-    "name": "2-CLS-20260626_144311",
+    "name": "2-CLS-白芷_防己-20260629_132130",
     "task_type": "分类",
     "description": "自动化分类训练项目",
     "dataset_dir": "C:\\Users\\Admin\\kimi_gui_automation\\AI训练平台测试\\2-CLS\\训练集",
     "work_dir": "C:\\Users\\Admin\\kimi_gui_automation\\AI训练平台测试\\2-CLS\\work",
-    "dva_file": "C:\\Users\\Admin\\kimi_gui_automation\\AI训练平台测试\\2-CLS\\2-CLS-20260626_144311.dva"
+    "dva_file": "C:\\Users\\Admin\\kimi_gui_automation\\AI训练平台测试\\2-CLS\\2-CLS-白芷_防己-20260629_132130.dva"
   },
   "training": {
     "auto_start": true,
@@ -53,7 +53,16 @@
     }
   },
   "dataset": {
-    "auto_detect": true
+    "auto_detect": true,
+    "resolved_categories": [
+      "王不留行",
+      "白芷",
+      "防己"
+    ],
+    "matched_user_categories": {
+      "白芷": "白芷",
+      "防己": "防己"
+    }
   },
   "webbridge": {
     "enabled": true,

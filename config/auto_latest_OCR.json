@@ -7,12 +7,12 @@
     "backend_ready_interval": 2.0
   },
   "project": {
-    "name": "1-OCR-20260626_143458",
+    "name": "1-OCR-20260629_134254",
     "task_type": "OCR",
     "description": "自动化 OCR 训练项目",
     "dataset_dir": "C:\\Users\\Admin\\kimi_gui_automation\\AI训练平台测试\\1-OCR\\训练集",
     "work_dir": "C:\\Users\\Admin\\kimi_gui_automation\\AI训练平台测试\\1-OCR\\work",
-    "dva_file": "C:\\Users\\Admin\\kimi_gui_automation\\AI训练平台测试\\1-OCR\\1-OCR-20260626_143458.dva"
+    "dva_file": "C:\\Users\\Admin\\kimi_gui_automation\\AI训练平台测试\\1-OCR\\1-OCR-20260629_134254.dva"
   },
   "training": {
     "auto_start": true,

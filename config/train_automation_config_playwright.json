@@ -9,9 +9,9 @@
     "name": "OCR-Auto-Test",
     "task_type": "OCR",
     "description": "自动化 OCR 训练项目",
-    "dataset_dir": "C:/Users/Admin/kimi_gui_automation/AI训练平台测试/1-OCR/训练集",
-    "work_dir": "C:/Users/Admin/kimi_gui_automation/AI训练平台测试/1-OCR/work",
-    "dva_file": "C:/Users/Admin/kimi_gui_automation/AI训练平台测试/1-OCR/OCR-Auto-Test.dva"
+    "dataset_dir": "Y:/zzh/AI训练平台测试/1-OCR/训练集",
+    "work_dir": "Y:/zzh/AI训练平台测试/1-OCR/work",
+    "dva_file": "Y:/zzh/AI训练平台测试/1-OCR/OCR-Auto-Test.dva"
   },
   "training": {
     "auto_start": true,

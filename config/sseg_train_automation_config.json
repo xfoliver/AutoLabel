@@ -10,9 +10,9 @@
     "name": "SSEG-Auto-Test",
     "task_type": "语义分割",
     "description": "自动化语义分割训练项目",
-    "dataset_dir": "C:/Users/Admin/kimi_gui_automation/AI训练平台测试/6-SSEG/训练集",
-    "work_dir": "C:/Users/Admin/kimi_gui_automation/AI训练平台测试/6-SSEG/work",
-    "dva_file": "C:/Users/Admin/kimi_gui_automation/AI训练平台测试/6-SSEG/SSEG-Auto-Test.dva"
+    "dataset_dir": "Y:/zzh/AI训练平台测试/6-SSEG/训练集",
+    "work_dir": "Y:/zzh/AI训练平台测试/6-SSEG/work",
+    "dva_file": "Y:/zzh/AI训练平台测试/6-SSEG/SSEG-Auto-Test.dva"
   },
   "training": {
     "auto_start": true,
