@@ -1,261 +1,214 @@
-# DLCV AI 训练平台自动化工具
+# AutoTrain 4.0 使用说明
 
-本项目提供从自然语言指令到模型训练的端到端自动化能力，支持 OCR、分类（CLS）、目标检测（DET）、DETR、实例分割（ISEG）、语义分割（SSEG）、旋转框检测（ROTATE）等多种任务类型。
+AutoTrain 4.0 是 DLCV AI 训练平台的**自然语言入口**。你只需用一句话描述训练需求，它就能自动找到数据集、生成配置，并调用 `auto_train2.0.py` 完成前端可视化训练。
 
----
-
-## 项目架构
-
-```text
-用户指令
-  │
-  ├──► auto_train4.0.py ──► autotrain4/ ──► config/ ──► auto_train2.0.py ──► kimi_webbridge/ ──► 浏览器/平台
-  │
-  └──► auto_train3.0.py （旧入口，仍可独立使用）
-```
-
-### 核心组件
-
-| 组件 | 说明 |
-|---|---|
-| `auto_train2.0.py` | 执行引擎：加载配置 → 生成 `.dva` → 启动平台 → WebBridge 操作前端 → 监控训练 |
-| `auto_train3.0.py` | 旧版入口：通过命令行参数（`--task OCR --latest`）选择数据集并调用 2.0 |
-| `auto_train4.0.py` | 新版入口：通过自然语言指令（`--prompt`）自动解析意图、匹配数据集并调用 2.0 |
-| `autotrain4/` | 4.0 的模块化实现包，包含 NLU、数据集匹配、配置生成、LLM 客户端 |
-| `config/` | 各任务类型的模板配置文件，以及运行时生成的最终配置 |
-| `kimi_webbridge/` | WebBridge 抽象层，支持 `playwright`/`skill`/`http`/`stub` 多种适配器 |
-| `AI训练平台测试/` | 默认数据集根目录，按任务类型存放数据集文件夹 |
+此外，4.0 还新增了**一键测试最新模型**和**自动推理对比**功能：训练完成后（或任何时候），只需说“测试刚才训练的模型”，即可自动加载最新 `.dvp`、用训练集作为测试集跑推理，并生成对比报告。
 
 ---
 
-## 环境要求
+## 核心特性
 
-- Python >= 3.8
-- Windows 系统（当前平台 exe 为 Windows 版本）
-- 已安装 `sentence-transformers`、`rapidfuzz`、`openai`、`requests`、`psutil`、`pyyaml`、`playwright`
-
-### 依赖检查
-
-```bash
-python -c "import sentence_transformers, rapidfuzz, openai, requests, psutil, yaml, playwright; print('OK')"
-```
+- **自然语言触发**：支持中文/英文别名识别任务类型。
+- **语义数据集匹配**：基于 `sentence-transformers` 做跨语言/同义词类别匹配。
+- **保留 WebBridge 可视化**：不改动 2.0 执行引擎，前端点击流程完全保留。
+- **一键测试最新模型**：无需手动找模型路径和测试集，自动复用最近一次训练的配置。
+- **自动推理对比**：可与基准模型（baseline）对比同一张测试集，统计结果一致率。
+- **可读的概率格式**：report 中的 score/probability 使用普通小数（如 `0.99470669`），不使用科学计数法。
 
 ---
 
 ## 快速开始
 
-### 1. 自然语言一句话训练（推荐）
+### 1. 一句话训练
 
 ```bash
-# 分类
-python auto_train4.0.py --prompt "训练一个cls模型来辨别王不留行和白芷"
-
-# OCR
-python auto_train4.0.py --prompt "训练一个ocr模型识别图片中的文字"
-
-# 目标检测
-python auto_train4.0.py --prompt "训练一个det模型来识别螺丝"
-
-# DETR
-python auto_train4.0.py --prompt "训练一个detr模型来检测作弊行为"
-
-# 实例分割
-python auto_train4.0.py --prompt "训练一个实例分割模型"
-
-# 语义分割
-python auto_train4.0.py --prompt "训练一个语义分割模型"
+python auto_train4.0.py --prompt "训练一个 cls 模型来辨别王不留行和白芷"
 ```
 
-### 2. 仅生成配置，不启动训练
+### 2. 仅生成配置（不启动训练）
 
 ```bash
-python auto_train4.0.py --prompt "训练一个cls模型来辨别王不留行和白芷" --generate-config-only
+python auto_train4.0.py --prompt "训练一个 cls 模型来辨别王不留行和白芷" --generate-config-only
 ```
 
-### 3. Dry-run（只生成 .dva，不启动平台）
+### 3. 生成 .dva 做 dry-run
 
 ```bash
-python auto_train4.0.py --prompt "训练一个cls模型来辨别王不留行和白芷" --dry-run
+python auto_train4.0.py --prompt "训练一个 cls 模型来辨别王不留行和白芷" --dry-run
 ```
 
-### 4. 手动指定数据集文件夹
+### 4. 手动指定文件夹（跳过语义匹配）
 
 ```bash
 python auto_train4.0.py --prompt "训练一个分类模型" --folder 2-CLS
 ```
 
-### 5. 旧版命令行入口（3.0）
+### 5. 切换 WebBridge adapter
 
 ```bash
-python auto_train3.0.py --task OCR --latest
-python auto_train3.0.py --task CLS --folder 2-CLS
+python auto_train4.0.py --prompt "训练一个 cls 模型来辨别王不留行和白芷" --adapter stub --dry-run
 ```
+
+### 6. 测试刚刚训练好的模型（训练集 = 测试集）
+
+```bash
+# 方式一：用自然语言触发测试意图
+python auto_train4.0.py --prompt "现在帮我测试一下刚刚训练的模型"
+
+# 方式二：显式指定 --test-latest
+python auto_train4.0.py --prompt "测试分类模型" --test-latest
+
+# 方式三：指定具体配置文件（测某一次训练）
+python auto_train4.0.py --prompt "测试分类模型" --test-latest --latest-config config/auto_latest_分类.json
+```
+
+测试模式会自动：
+
+1. 找到 `config/auto_latest_{任务类型}.json` 中最近一次的训练配置。
+2. 从配置里读出 `project.dataset_dir`（训练集）和 `project.work_dir`。
+3. 在 `work_dir` 里找最新的 `.dvp` 模型。
+4. 用训练集作为测试集，调用推理接口生成 `test_report_{模型名}.json`。
+
+### 7. 与基准模型对比
+
+```bash
+python auto_train4.0.py --prompt "测试刚才训练的分类模型" --baseline-model "Baseline Models/CLS-baseline_20260630_154101.dvp"
+```
+
+跑完后 report 的 `summary` 里会有：
+
+- `match_count`：两张模型结果一致的图片数
+- `mismatch_count`：两张模型结果不一致的图片数
+- `mismatched_images`：不一致的明细
 
 ---
 
-## 4.0 自然语言入口详解
-
-### 核心流程
-
-```text
-用户输入 --prompt
-    │
-    ▼
-auto_train4.0.py
-    ├── 1. NLU 解析 → task_type + categories + dataset_hint
-    ├── 2. 语义数据集匹配 → 找到最匹配的文件夹
-    ├── 3. 生成 config/auto_latest_{任务类型}.json
-    └── 4. 调用 auto_train2.0.py --config xxx.json
-              │
-              ▼
-        生成 .dva → 启平台 → WebBridge 点击训练 → 监控
-```
-
-### 支持的指令形式
-
-```bash
-# 中文类别名
-python auto_train4.0.py --prompt "训练一个分类模型识别王不留行和白芷"
-
-# 英文类别名（数据集为中文时也能语义匹配）
-python auto_train4.0.py --prompt "train a cls model to classify tulip and chrysanthemum"
-
-# 只指定任务
-python auto_train4.0.py --prompt "训练一个目标检测模型" --folder 3-DET
-
-# 切换 WebBridge adapter
-python auto_train4.0.py --prompt "训练一个cls模型" --adapter stub --dry-run
-```
-
-### 4.0 命令行参数
+## 命令行参数
 
 | 参数 | 说明 |
 |---|---|
-| `--prompt` | **必填**。自然语言训练指令。 |
+| `--prompt` | **必填**。自然语言训练/测试指令。 |
 | `--scan-dir` | 数据集根目录，默认 `AI训练平台测试`。 |
 | `--folder` | 直接指定文件夹名，跳过语义匹配。 |
 | `--config-out` | 指定生成的配置文件路径。 |
 | `--adapter` | 覆盖 WebBridge adapter：`playwright` / `skill` / `http` / `stub`。 |
 | `--auto-threshold` | 自动执行的匹配置信度阈值，默认 `0.55`。 |
-| `--generate-config-only` | 仅生成配置，不调用 2.0。 |
+| `--generate-config-only` | 仅生成配置，不调用 `auto_train2.0.py`。 |
 | `--dry-run` | 传给 2.0：只生成 `.dva`，不启动平台。 |
 | `--force-new` | 传给 2.0：强制创建新项目。 |
 | `--keep-alive` | 传给 2.0：训练结束后保持平台运行（默认开启）。 |
-| `--reuse` | 传给 2.0：复用已运行平台实例（默认开启）。 |
+| `--reuse` | 传给 2.0：复用已运行的平台/后端实例（默认开启）。 |
+| `--full-train` | 训练集拉到 100%（`train_set_val=100, val_set_val=0`）。 |
+| `--test-latest` | 跳过训练，直接测试最近一次训练生成的模型。 |
+| `--latest-config` | 配合 `--test-latest`，指定要回看的配置文件路径。 |
+| `--test-image-dir` | 训练完成后用于推理测试的图片目录（训练模式专用）。 |
+| `--baseline-model` | 基准模型 `.dvp` 路径，用于与新模型推理结果对比。 |
+| `--inference-api-url` | DLCV 推理接口地址，默认 `http://127.0.0.1:9890`。 |
+| `--inference-report-path` | 推理对比报告保存路径。 |
+| `--skip-inference` | 跳过训练后的推理对比。 |
 
 ---
 
-## 2.0 执行引擎详解
+## 测试模式详解
 
-`auto_train2.0.py` 是实际干活的引擎，通常由 3.0/4.0 自动调用，也可以单独使用：
+### 触发方式
+
+AutoTrain 4.0 会通过自然语言判断你是否想测试模型。以下关键词都会进入测试模式：
+
+- 测试、试一下、试下、评估、评测、验证、跑一遍
+- test / testing / evaluate / eval / infer / inference
+
+例如：
 
 ```bash
-python auto_train2.0.py --config config/auto_latest_分类.json
+python auto_train4.0.py --prompt "帮我测试一下刚刚训练的分类模型"
+python auto_train4.0.py --prompt "evaluate the latest cls model"
 ```
 
-### 2.0 执行流程
+### 模型定位逻辑
 
-1. **加载配置**：读取 JSON 配置，展开 `%VAR%` 环境变量，校验必填项。
-2. **生成 `.dva`**：根据配置生成/更新项目文件，自动检测数据集类别。
-3. **启动平台**：启动 DLCV AI Training Platform 桌面应用，或复用已有实例。
-4. **服务就绪探测**：等待后端（`:9887`）和前端（`:8843`）就绪。
-5. **后端 API**：确保项目存在，将超参数写入后端。
-6. **WebBridge 自动化**：在浏览器中设置参数、保存、点击开始训练。
-7. **监控训练**：轮询训练状态直到完成/失败/中止。
+1. 如果指定了 `--latest-config`，直接使用该配置文件。
+2. 否则在 `config/auto_latest_*.json` 中找：
+   - 如果意图里识别出任务类型（如“分类”），优先用 `auto_latest_分类.json`。
+   - 否则用修改时间最新的 `auto_latest_*.json`。
+3. 从配置中读取 `project.work_dir`，取里面最新的 `.dvp` 模型。
+4. 从配置中读取 `project.dataset_dir`，作为测试图片目录。
 
-### 2.0 命令行参数
+### 推理服务要求
 
-| 参数 | 说明 |
-|---|---|
-| `--config` | 配置文件路径。 |
-| `--force-new` | 强制创建新项目。 |
-| `--dry-run` | 仅生成 `.dva`，不启动平台。 |
-| `--keep-alive` | 训练结束后保持平台运行。 |
-| `--reuse` | 复用已运行的平台/后端实例。 |
-
----
-
-## 数据集组织规范
-
-默认扫描目录为 `AI训练平台测试/`，建议按以下结构组织：
+测试模式需要本地 DLCV 推理服务已经启动，默认地址为：
 
 ```text
-AI训练平台测试/
-├── 1-OCR/
-│   └── 训练集/
-├── 2-CLS/
-│   └── 训练集/
-│       ├── 类别A/
-│       ├── 类别B/
-│       └── 类别C/
-├── 3-DET/
-│   └── 训练集/
-├── 4-DETR/
-│   └── 训练/
-├── 5-ISEG/
-│   └── 1-训练集/
-├── 6-SSEG/
-│   └── 训练集/
-└── 7-ROTATE/
-    └── 训练集/
+http://127.0.0.1:9890
 ```
 
-数据集子目录探测优先级：
-
-```python
-["训练集", "1-训练集", "训练", "train", "dataset"]
-```
+如果服务在其他地址，用 `--inference-api-url` 指定。
 
 ---
 
-## WebBridge 适配器
+## 推理报告格式
 
-WebBridge 是连接 2.0 与真实浏览器的抽象层，支持多种适配器：
-
-| 适配器 | 说明 | 适用场景 |
-|---|---|---|
-| `playwright` | 直接用 Python 启动 Chromium/Edge，DOM 操作 | 默认推荐，稳定可控 |
-| `skill` | 连接本机 Kimi WebBridge daemon（`:10086`） | 已有 daemon 环境 |
-| `http` | 通过 REST API 连接外部 WebBridge 服务 | 远程/分布式 |
-| `stub` | 测试桩，不操作真实浏览器 | 调试流程 |
-
-默认配置使用 `playwright`，可在配置中修改：
+报告是一个 JSON 文件，主要结构如下：
 
 ```json
 {
-  "webbridge": {
-    "enabled": true,
-    "adapter": "playwright",
-    "frontend_url": "http://localhost:8843",
-    "headless": false,
-    "browser": "chromium"
-  }
+  "new_model_path": ".../2-CLS-xxx.dvp",
+  "baseline_model_path": ".../CLS-baseline_xxx.dvp",
+  "image_dir": ".../2-CLS/训练集",
+  "summary": {
+    "total_images": 264,
+    "new_success_count": 264,
+    "baseline_success_count": 264,
+    "match_count": 264,
+    "mismatch_count": 0,
+    "new_failed_images": [],
+    "baseline_failed_images": []
+  },
+  "mismatched_images": [],
+  "per_image_results": [
+    {
+      "image": "IMG_xxx.jpg",
+      "new_model": {
+        "success": true,
+        "result": { "results": [ { "score": 0.99470669, "category_name": "王不留行" } ] },
+        "error": null
+      },
+      "baseline_model": {
+        "success": true,
+        "result": { ... },
+        "error": null,
+        "match": true
+      }
+    }
+  ]
 }
 ```
 
+### 结果对比规则
+
+默认采用 JSON 字符串归一化对比：两张模型的 `result` 字段（取 `results` 整体）按字段顺序排序后比较。分类任务中，只要 top-1 类别、score、category_id 等完全一致，就算 `match`。
+
+如果需要更严格的对比（例如只比较 top-1 category_name），可以修改 `autotrain4/evaluator.py` 中的 `_compare_results` 方法。
+
 ---
 
-## 配置模板
+## 匹配策略
 
-`config/` 目录包含各任务类型的模板：
+当用户输入包含具体类别时，4.0 会按以下策略匹配数据集：
 
-| 任务类型 | 模板文件 |
-|---|---|
-| OCR | `config/ocr_train_automation_config.json` |
-| 分类 | `config/cls_train_automation_config.json` |
-| 目标检测 | `config/det_train_automation_config.json` |
-| DETR | `config/detr_train_automation_config.json` |
-| 实例分割 | `config/iseg_train_automation_config.json` |
-| 语义分割 | `config/sseg_train_automation_config.json` |
-| 旋转框检测 | `config/rotate_train_automation_config.json` |
+1. **任务类型过滤**：只找对应任务文件夹（`cls` 只匹配分类，不会误匹配 `detr`）。
+2. **精确匹配**：类别名完全一致。
+3. **模糊匹配**：`rapidfuzz` 处理拼写变体。
+4. **语义向量匹配**：`sentence-transformers` 处理中英文、同义词。
+5. **LLM 兜底**：处理复杂/抽象类别对齐（需配置 LLM）。
 
-运行时生成的最终配置会覆盖模板中的 `project` 路径信息，保存为 `config/auto_latest_{任务类型}.json`。
+如果用户指定的类别和数据集类别不匹配，系统会**拒绝执行**并提示。
 
 ---
 
 ## LLM 配置（可选）
 
-4.0 默认使用规则 + `sentence-transformers` 语义向量匹配，无需 LLM。如需启用 LLM 兜底处理复杂语义，配置环境变量：
+AutoTrain 4.0 默认使用规则 + 向量模型，已能覆盖大部分场景。如需启用 LLM 兜底，配置以下环境变量：
 
 ```bash
 export AUTOTRAIN_LLM_BASE_URL="https://api.openai.com/v1"
@@ -263,63 +216,56 @@ export AUTOTRAIN_LLM_API_KEY="sk-xxx"
 export AUTOTRAIN_LLM_MODEL="gpt-3.5-turbo"
 ```
 
-支持任意 OpenAI 兼容接口。
+支持任意 OpenAI 兼容接口（如 Kimi、通义千问、本地 vLLM 等）。
 
 ---
 
-## 常见问题
-
-### 1. 中文乱码
-
-Windows 终端建议设置为 UTF-8：
-
-```bash
-chcp 65001
-set PYTHONIOENCODING=utf-8
-```
-
-### 2. 首次运行慢
-
-首次使用 `sentence-transformers` 会下载多语言模型，需要联网，后续运行会缓存。
-
-### 3. 数据集类别不匹配
-
-如果提示「数据集类别不匹配」，说明用户指定的类别和数据集子文件夹不一致。可以：
-
-- 检查数据集类别名是否正确
-- 用 `--folder` 强制指定文件夹
-- 对于描述性任务（如「识别图片中的文字」），系统会自动跳过类别匹配
-
-### 4. WebBridge 参数跳过
-
-某些任务页面的字段名和模板不一致时，Playwright 会跳过不存在的参数。这通常不影响训练启动，但可能需要根据实际页面调整 `kimi_webbridge/playwright_adapter.py` 中的 `HP_CONTROL_MAP`。
-
----
-
-## 文件结构
+## 项目结构
 
 ```text
-.
-├── auto_train2.0.py              # 执行引擎
-├── auto_train3.0.py              # 旧版命令行入口
-├── auto_train4.0.py              # 新版自然语言入口
-├── autotrain4/                   # 4.0 模块包
-│   ├── __init__.py
-│   ├── common.py                 # 常量、任务映射
-│   ├── nlu.py                    # 自然语言意图解析
-│   ├── resolver.py               # 语义数据集匹配
-│   ├── config_builder.py         # 配置生成
-│   └── llm_client.py             # 可选 LLM 客户端
-├── config/                       # 配置模板和生成配置
-├── kimi_webbridge/               # WebBridge 抽象层
-├── AI训练平台测试/                # 默认数据集根目录
-└── README.md                     # 本文档
+auto_train4.0.py              # 4.0 主入口
+autotrain4/
+  ├── common.py               # 任务类型映射、常量
+  ├── nlu.py                  # 自然语言意图解析（含 test 意图）
+  ├── resolver.py             # 语义数据集匹配
+  ├── config_builder.py       # 配置生成
+  ├── llm_client.py           # 可选 LLM 客户端
+  ├── inference_client.py     # DLCV 推理接口客户端
+  └── evaluator.py            # 推理结果评估与对比报告生成
 ```
 
 ---
 
-## 更新日志
+## 示例
 
-- **4.0**：新增自然语言入口、语义数据集匹配、任务描述过滤、LLM 可选兜底。
-- **3.0**：基于命令行参数的数据集自动选择和配置生成。
-- **2.0**：基于 Kimi WebBridge 的可视化训练自动化执行引擎。
+```bash
+# 中文类别名
+python auto_train4.0.py --prompt "训练一个分类模型识别王不留行和白芷"
+
+# 英文类别名（数据集为中文时也能语义匹配）
+python auto_train4.0.py --prompt "train a cls model to classify wangbuliu and baizhi"
+
+# DETR
+python auto_train4.0.py --prompt "训练一个 DETR 模型检测作弊行为"
+
+# 不指定类别，只指定任务
+python auto_train4.0.py --prompt "训练一个目标检测模型" --folder 3-DET
+
+# 训练完立刻测试
+python auto_train4.0.py --prompt "训练一个 cls 模型来辨别王不留行和白芷" --test-image-dir "AI训练平台测试/2-CLS/训练集"
+
+# 只测试最新模型
+python auto_train4.0.py --prompt "测试刚刚训练的分类模型"
+
+# 测试并对比 baseline
+python auto_train4.0.py --prompt "测试刚刚训练的分类模型" --baseline-model "Baseline Models/CLS-baseline_20260630_154101.dvp"
+```
+
+---
+
+## 注意事项
+
+- 首次运行会下载 `sentence-transformers` 模型，需要联网。
+- Windows 终端建议使用 UTF-8 编码：执行 `chcp 65001` 或设置 `PYTHONIOENCODING=utf-8`。
+- 4.0 会覆盖 `config/auto_latest_{任务类型}.json`，如需保留历史配置请用 `--config-out`。
+- 测试模式复用训练集作为测试集，主要用于快速验证模型可用性和与 baseline 的一致性；如需客观评估泛化能力，建议用独立的测试集并通过 `--test-image-dir` 指定。

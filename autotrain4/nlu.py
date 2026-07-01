@@ -50,6 +50,12 @@ class IntentParser:
         "旋转框检测": ["rotate", "旋转框检测", "旋转框"],
     }
 
+    # 测试/评估意图关键词
+    TEST_KEYWORDS = [
+        "测试", "试一下", "试下", "评估", "评测", "验证", "跑一遍",
+        "test", "testing", "evaluate", "eval", "infer", "inference",
+    ]
+
     # 类别提取的停用词
     STOP_WORDS = {
         "一个",
@@ -95,10 +101,17 @@ class IntentParser:
         if not prompt:
             raise ValueError("输入不能为空")
 
-        # 1. 任务类型
-        task_type = self._extract_task_type(prompt)
+        # 1. 模式（优先判断测试/评估意图）
+        mode = self._extract_mode(prompt)
 
-        # 2. 类别（先规则，再 LLM 兜底）
+        # 2. 任务类型
+        try:
+            task_type = self._extract_task_type(prompt)
+        except ValueError:
+            # 测试类指令可能只含"刚刚训练的模型"而不含任务类型，允许为空，由下游推断
+            task_type = ""
+
+        # 3. 类别（先规则，再 LLM 兜底）
         # OCR 任务的"文字"是识别对象，不是分类类别，通常不需要类别匹配
         if task_type == "OCR":
             categories = []
@@ -108,11 +121,12 @@ class IntentParser:
                 logger.info("规则未提取到类别，尝试 LLM 提取")
                 categories = self._extract_categories_with_llm(prompt)
 
-        # 3. 数据集提示
+        # 4. 数据集提示
         dataset_hint = self._extract_dataset_hint(prompt)
 
-        # 4. 模式
-        mode = "dry_run" if "dry" in prompt.lower() or "只生成" in prompt else "train"
+        # 5. dry_run 覆盖
+        if mode == "train" and ("dry" in prompt.lower() or "只生成" in prompt):
+            mode = "dry_run"
 
         return TrainIntent(
             task_type=task_type,
@@ -121,6 +135,14 @@ class IntentParser:
             mode=mode,
             raw_prompt=prompt,
         )
+
+    def _extract_mode(self, prompt: str) -> str:
+        """判断用户意图是训练还是测试/评估。"""
+        lower = prompt.lower()
+        for kw in self.TEST_KEYWORDS:
+            if kw.lower() in lower:
+                return "test"
+        return "train"
 
     def _extract_task_type(self, prompt: str) -> str:
         """从用户输入中提取规范任务类型。"""

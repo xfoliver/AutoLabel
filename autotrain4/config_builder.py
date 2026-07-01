@@ -29,11 +29,13 @@ class ConfigBuilder:
         match: DatasetMatch,
         project_root: Optional[Path] = None,
         adapter: Optional[str] = None,
+        full_train: bool = False,
     ):
         self.intent = intent
         self.match = match
         self.project_root = project_root or Path(__file__).parent.parent.resolve()
         self.adapter = adapter
+        self.full_train = full_train
 
     def build(self) -> Dict[str, Any]:
         """生成完整配置。"""
@@ -75,6 +77,12 @@ class ConfigBuilder:
         # training 区块：根据数据量做轻量调整
         training = cfg.setdefault("training", {})
         self._tune_hyperparameters(training)
+
+        # 全量训练模式：训练集拉到 100%，验证集保持模板默认值（如 20%）
+        if self.full_train:
+            hp = training.setdefault("hyperparameters", {})
+            hp["train_set_val"] = 100
+            logger.info("启用全量训练模式: train_set_val=100")
 
         return cfg
 
