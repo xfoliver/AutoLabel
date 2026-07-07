@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
 import requests
+from tqdm import tqdm
 
 logger = logging.getLogger(__name__)
 
@@ -43,11 +44,13 @@ class InferenceClient:
         timeout: int = 60,
         max_retries: int = 2,
         retry_delay: float = 1.0,
+        progress: bool = True,
     ):
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
         self.max_retries = max_retries
         self.retry_delay = retry_delay
+        self.progress = progress
         self.session = requests.session()
         self._loaded_model_path: Optional[str] = None
 
@@ -181,6 +184,7 @@ class InferenceClient:
         model_path: Union[str, Path],
         image_dir: Union[str, Path],
         image_paths: Optional[List[Union[str, Path]]] = None,
+        progress: Optional[bool] = None,
     ) -> List[Dict[str, Any]]:
         """
         对文件夹或指定图片列表批量推理。
@@ -189,6 +193,7 @@ class InferenceClient:
             model_path: .dvp 模型文件路径。
             image_dir: 图片所在目录（当 image_paths 为 None 时遍历该目录）。
             image_paths: 可选，指定具体的图片路径列表。
+            progress: 是否在终端显示进度条，默认 True。
 
         Returns:
             每张图片的推理结果列表，失败条目也会包含 error 字段。
@@ -212,8 +217,32 @@ class InferenceClient:
         results: List[Dict[str, Any]] = []
         total = len(image_paths)
 
-        for idx, img_path in enumerate(image_paths, 1):
-            logger.info("推理进度: %s/%s - %s", idx, total, img_path.name)
+        show_progress = self.progress if progress is None else progress
+        iterator = enumerate(image_paths, 1)
+
+        # 进度显示策略：
+        # 1. 默认用 tqdm 进度条；2. 非交互环境或显式关闭时，用 logger 定期报告进度
+        use_tqdm = show_progress and total > 0
+        if use_tqdm:
+            try:
+                iterator = tqdm(
+                    iterator,
+                    total=total,
+                    desc=f"推理 [{model_path.name}]",
+                    unit="img",
+                    ncols=80,
+                    ascii=True,
+                    disable=False,
+                )
+            except Exception:
+                use_tqdm = False
+
+        report_interval = max(1, total // 10) if total > 0 else 1
+        for idx, img_path in iterator:
+            if not use_tqdm and idx % report_interval == 0:
+                logger.info("推理进度: %s/%s - %s", idx, total, img_path.name)
+            else:
+                logger.debug("推理进度: %s/%s - %s", idx, total, img_path.name)
             try:
                 result = self.infer(model_path, img_path)
                 results.append({

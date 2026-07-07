@@ -25,6 +25,7 @@ from typing import Any, Dict, Optional
 from autotrain4.config_builder import ConfigBuilder
 from autotrain4.evaluator import InferenceEvaluator
 from autotrain4.inference_client import InferenceClient
+from autotrain4.judge import RequirementJudge
 from autotrain4.llm_client import LLMClient
 from autotrain4.nlu import IntentParser
 from autotrain4.resolver import DatasetResolver
@@ -97,13 +98,19 @@ class AutoTrain4Orchestrator:
         self.match = self._resolve_match()
         logger.info("匹配数据集: %s", self.match.to_dict())
 
-        # 4. 生成配置
+        # 4. 第三层：DeepSeek 需求分析与判断
+        judge = RequirementJudge()
+        judge_result = judge.judge(self.intent, self.match)
+        logger.info("DeepSeek 判断: %s", judge_result.to_dict())
+
+        # 5. 生成配置
         builder = ConfigBuilder(
             self.intent,
             self.match,
             project_root=self.project_root,
             adapter=self.args.adapter,
             full_train=self.args.full_train,
+            adjustments=judge_result.adjustments,
         )
         self.config_path = builder.save(self.args.config_out)
 
@@ -249,7 +256,10 @@ class AutoTrain4Orchestrator:
         baseline_model_path: Optional[str] = None,
     ) -> None:
         """使用指定路径执行推理评估。"""
-        client = InferenceClient(base_url=self.args.inference_api_url)
+        client = InferenceClient(
+            base_url=self.args.inference_api_url,
+            progress=not self.args.no_progress,
+        )
         evaluator = InferenceEvaluator(client=client)
 
         try:
@@ -288,7 +298,10 @@ class AutoTrain4Orchestrator:
         logger.info("新模型: %s", new_dvp)
         logger.info("测试图片目录: %s", test_image_dir)
 
-        client = InferenceClient(base_url=self.args.inference_api_url)
+        client = InferenceClient(
+            base_url=self.args.inference_api_url,
+            progress=not self.args.no_progress,
+        )
         evaluator = InferenceEvaluator(client=client)
 
         try:
@@ -430,6 +443,11 @@ def main() -> int:
         "--skip-inference",
         action="store_true",
         help="跳过训练后的推理对比",
+    )
+    parser.add_argument(
+        "--no-progress",
+        action="store_true",
+        help="关闭推理进度条显示",
     )
     parser.add_argument(
         "--test-latest",

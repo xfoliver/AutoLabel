@@ -30,12 +30,14 @@ class ConfigBuilder:
         project_root: Optional[Path] = None,
         adapter: Optional[str] = None,
         full_train: bool = False,
+        adjustments: Optional[Dict[str, Any]] = None,
     ):
         self.intent = intent
         self.match = match
         self.project_root = project_root or Path(__file__).parent.parent.resolve()
         self.adapter = adapter
         self.full_train = full_train
+        self.adjustments = adjustments or {}
 
     def build(self) -> Dict[str, Any]:
         """生成完整配置。"""
@@ -84,7 +86,23 @@ class ConfigBuilder:
             hp["train_set_val"] = 100
             logger.info("启用全量训练模式: train_set_val=100")
 
+        # 应用 DeepSeek 判断层给出的修正建议
+        if self.adjustments:
+            cfg = self._deep_merge(cfg, self.adjustments)
+            logger.info("已应用 DeepSeek 调整建议: %s", self.adjustments)
+
         return cfg
+
+    @staticmethod
+    def _deep_merge(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
+        """深度合并两个字典，override 覆盖 base。"""
+        result = dict(base)
+        for key, value in override.items():
+            if isinstance(value, dict) and isinstance(result.get(key), dict):
+                result[key] = ConfigBuilder._deep_merge(result[key], value)
+            else:
+                result[key] = value
+        return result
 
     def save(self, config_path: Optional[Path] = None) -> Path:
         """保存配置并返回路径。"""

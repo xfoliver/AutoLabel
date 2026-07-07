@@ -882,7 +882,7 @@ class DLCVAutoTrainer:
 
         try:
             with create_webbridge(wb_cfg) as bridge:
-                logger.info("连接 Kimi WebBridge (adapter=%s)", wb_cfg.get("adapter", "stub"))
+                logger.info("连接 Kimi WebBridge (adapter=%s)", wb_cfg.get("adapter", "playwright"))
 
                 logger.info("导航至训练参数页: %s", param_url)
                 bridge.navigate(param_url)

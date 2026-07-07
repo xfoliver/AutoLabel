@@ -1,12 +1,12 @@
 """
-可选的 LLM 客户端，用于自然语言理解和类别语义对齐。
+LLM 客户端。
 
 支持任意 OpenAI 兼容接口，通过环境变量配置：
     AUTOTRAIN_LLM_BASE_URL
     AUTOTRAIN_LLM_API_KEY
     AUTOTRAIN_LLM_MODEL
 
-如果未配置，则所有 LLM 方法返回 None，调用方应使用规则/向量兜底逻辑。
+并提供 DeepSeek 专用入口（默认使用用户指定的 DeepSeek key）。
 """
 
 import json
@@ -15,6 +15,12 @@ import os
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
+
+# DeepSeek 默认配置
+DEEPSEEK_BASE_URL = "https://api.deepseek.com"
+DEEPSEEK_DEFAULT_MODEL = "deepseek-chat"
+# 注意：以下 key 由用户显式提供，如需更换请改环境变量 DEEPSEEK_API_KEY
+DEEPSEEK_DEFAULT_API_KEY = "sk-4fd127b871bb49df82ed5e9f4d40346a"
 
 
 class LLMClient:
@@ -27,9 +33,22 @@ class LLMClient:
         model: Optional[str] = None,
         timeout: int = 60,
     ):
-        self.base_url = (base_url or os.environ.get("AUTOTRAIN_LLM_BASE_URL", "")).rstrip("/")
-        self.api_key = api_key or os.environ.get("AUTOTRAIN_LLM_API_KEY", "")
-        self.model = model or os.environ.get("AUTOTRAIN_LLM_MODEL", "gpt-3.5-turbo")
+        # 优先使用显式参数，其次环境变量；都没有时默认回落到 DeepSeek
+        self.base_url = (
+            base_url
+            or os.environ.get("AUTOTRAIN_LLM_BASE_URL", "")
+            or DEEPSEEK_BASE_URL
+        ).rstrip("/")
+        self.api_key = (
+            api_key
+            or os.environ.get("AUTOTRAIN_LLM_API_KEY", "")
+            or os.environ.get("DEEPSEEK_API_KEY", DEEPSEEK_DEFAULT_API_KEY)
+        )
+        self.model = (
+            model
+            or os.environ.get("AUTOTRAIN_LLM_MODEL", "")
+            or os.environ.get("DEEPSEEK_MODEL", DEEPSEEK_DEFAULT_MODEL)
+        )
         self.timeout = timeout
         self._client: Any = None
 
@@ -37,6 +56,21 @@ class LLMClient:
     def available(self) -> bool:
         """是否配置了可用的 LLM。"""
         return bool(self.base_url and self.api_key)
+
+    @classmethod
+    def deepseek(
+        cls,
+        api_key: Optional[str] = None,
+        model: Optional[str] = None,
+        timeout: int = 60,
+    ) -> "LLMClient":
+        """创建 DeepSeek 专用 LLM 客户端。"""
+        return cls(
+            base_url=DEEPSEEK_BASE_URL,
+            api_key=api_key or os.environ.get("DEEPSEEK_API_KEY", DEEPSEEK_DEFAULT_API_KEY),
+            model=model or os.environ.get("DEEPSEEK_MODEL", DEEPSEEK_DEFAULT_MODEL),
+            timeout=timeout,
+        )
 
     def _ensure_client(self) -> Any:
         """延迟导入并创建 openai 客户端。"""
@@ -57,7 +91,7 @@ class LLMClient:
     def chat(self, messages: List[Dict[str, str]], temperature: float = 0.0) -> Optional[str]:
         """调用 LLM chat completion，返回文本内容。"""
         if not self.available:
-            return None
+            raise RuntimeError("LLM 未配置 base_url / api_key，无法调用")
         try:
             client = self._ensure_client()
             resp = client.chat.completions.create(
@@ -68,7 +102,7 @@ class LLMClient:
             return resp.choices[0].message.content
         except Exception as e:
             logger.warning("LLM 调用失败: %s", e)
-            return None
+            raise
 
     def extract_intent(self, prompt: str) -> Optional[Dict[str, Any]]:
         """从用户自然语言中提取意图。"""
@@ -96,6 +130,44 @@ class LLMClient:
             return None
         return self._safe_parse_json(content)
 
+    def select_dataset(
+        self,
+        prompt: str,
+        intent: Dict[str, Any],
+        candidates: List[Dict[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        """
+        让 LLM 在所有候选数据集中选择最匹配的一项。
+        返回 {"folder": "文件夹名", "reasoning": "..."}。
+        """
+        system_msg = (
+            "你是 DLCV 训练平台的数据集匹配助手。请根据用户意图，从候选数据集中选出最匹配的一个。\n"
+            "返回 JSON 格式：\n"
+            "{\n"
+            '  "folder": "选中的文件夹名称（必须来自候选列表）",\n'
+            '  "reasoning": "简要说明为什么选这个文件夹",\n'
+            '  "confidence": 0.95\n'
+            "}\n"
+            "注意：\n"
+            "1. folder 必须是候选列表中真实存在的名称，不要编造。\n"
+            "2. 如果没有任何候选匹配，返回 null。\n"
+            "3. 只返回 JSON，不要附加说明。"
+        )
+        user_msg = (
+            f"用户原始输入：{prompt}\n"
+            f"解析出的意图：{json.dumps(intent, ensure_ascii=False)}\n"
+            f"候选数据集：{json.dumps(candidates, ensure_ascii=False)}"
+        )
+        content = self.chat(
+            [
+                {"role": "system", "content": system_msg},
+                {"role": "user", "content": user_msg},
+            ]
+        )
+        if not content:
+            return None
+        return self._safe_parse_json(content)
+
     def match_categories(
         self,
         user_categories: List[str],
@@ -110,7 +182,7 @@ class LLMClient:
         system_msg = (
             "你是一个类别对齐助手。请判断用户提到的每个类别对应数据集中的哪个类别。\n"
             "如果数据集中没有对应类别，请填 null。\n"
-            "返回 JSON 格式：{\"类别A\": \"dataset_cat_a\", \"类别B\": null}"
+            '返回 JSON 格式：{"类别A": "dataset_cat_a", "类别B": null}'
         )
         user_msg = (
             f"用户类别：{json.dumps(user_categories, ensure_ascii=False)}\n"

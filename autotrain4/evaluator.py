@@ -138,6 +138,8 @@ class InferenceEvaluator:
 
     def __init__(self, client: Optional[InferenceClient] = None):
         self.client = client or InferenceClient()
+        # 默认跟随 client 的进度条设置
+        self.progress = getattr(self.client, "progress", True)
 
     def evaluate(
         self,
@@ -166,10 +168,10 @@ class InferenceEvaluator:
             logger.info("基准模型: %s", baseline_model_path)
         logger.info("测试图片目录: %s", image_dir)
 
-        new_results = self.client.infer_batch(new_model_path, image_dir)
+        new_results = self.client.infer_batch(new_model_path, image_dir, progress=self.progress)
         baseline_results: Optional[List[Dict[str, Any]]] = None
         if baseline_model_path:
-            baseline_results = self.client.infer_batch(baseline_model_path, image_dir)
+            baseline_results = self.client.infer_batch(baseline_model_path, image_dir, progress=self.progress)
 
         return self._build_report(
             new_results=new_results,
