@@ -2,7 +2,13 @@
 
 AutoTrain 4.0 是 DLCV AI 训练平台的**自然语言入口**。你只需用一句话描述训练需求，它就能自动解析意图、匹配数据集、生成训练配置，并调用 `auto_train2.0.py` 完成前端可视化训练。
 
-4.0 采用 **LLM（默认 DeepSeek）驱动**的决策链路：意图解析、数据集选择、类别对齐、超参与数据增强推荐、需求可行性判断均由 LLM 完成。同时还新增了**数据增强自然语言配置**、**训练完成保持页面**、**一键测试最新模型**和**自动推理对比**等功能。
+4.0 采用 **LLM（默认 DeepSeek）驱动**的三层决策链路：
+
+1. **意图解析**：识别任务类型、目标类别、数据增强、数据分析等需求。
+2. **数据集匹配**：在候选数据集中选择最匹配项，并完成类别对齐。
+3. **需求判断**：由 DeepSeek 评审需求可行性并给出配置修正建议。
+
+在此之上，4.0 还提供**数据增强自然语言配置**、**训练完成保持页面**、**前端录屏**、**一键测试最新模型**、**自动推理对比**以及 **Web / PyQt 两种前端界面**。
 
 ---
 
@@ -38,6 +44,40 @@ AutoTrain 4.0 采用三层 LLM 决策链路：
    - 输出最终是否继续执行的决策和配置修正建议。
 
 之后由 `autotrain4/config_builder.py` 生成配置，`auto_train2.0.py` 驱动 WebBridge 完成前端自动化训练。训练完成后可选执行推理对比（`autotrain4/inference_client.py` + `autotrain4/evaluator.py`）。
+
+---
+
+## 项目目录
+
+```text
+.
+├── auto_train4.0.py              # 4.0 主入口（命令行 / 被前端调用）
+├── auto_train2.0.py              # 2.0 执行引擎：启动平台 + WebBridge 自动化
+├── auto_train3.0.py              # 3.0 旧入口（已逐渐被 4.0 替代）
+├── autotrain4/                   # 4.0 核心模块
+│   ├── common.py                 # 任务类型映射、常量、默认 WebBridge 配置
+│   ├── nlu.py                    # 自然语言意图解析（含 test 意图、数据增强解析）
+│   ├── resolver.py               # LLM 驱动的数据集匹配与类别对齐
+│   ├── config_builder.py         # 配置生成、超参 tuning、LLM 训练顾问
+│   ├── judge.py                  # DeepSeek 第三层需求判断
+│   ├── llm_client.py             # LLM 客户端（OpenAI 兼容 / DeepSeek）
+│   ├── inference_client.py       # DLCV 推理接口客户端
+│   └── evaluator.py              # 推理结果评估与对比报告生成
+├── kimi_webbridge/               # WebBridge 前端自动化封装
+│   ├── base.py
+│   ├── playwright_adapter.py     # Playwright 实现（数据增强、录屏、训练流程）
+│   └── __init__.py
+├── web_frontend/                 # Web 前端（Flask + HTML/JS）
+│   ├── app.py
+│   └── templates/index.html
+├── pyqt_frontend/                # PyQt 桌面前端
+│   ├── main.py
+│   └── backend.py
+├── config/                       # 生成的训练配置（auto_latest_*.json）
+├── record/                       # 前端录屏文件
+├── webbridge_screenshots/        # 自动化截图
+└── README.md
+```
 
 ---
 
@@ -161,6 +201,41 @@ python auto_train4.0.py --prompt "测试刚才训练的分类模型" --baseline-
 - `match_count`：两张模型结果一致的图片数
 - `mismatch_count`：两张模型结果不一致的图片数
 - `mismatched_images`：不一致的明细
+
+---
+
+## 可选前端界面
+
+AutoTrain 4.0 核心是完全命令行驱动的（`auto_train4.0.py --prompt "..."`）。为了方便非技术用户，额外提供了两种可选前端，**两者都是独立的入口，互不影响**。
+
+### Web 前端
+
+基于 Flask + HTML/JS，在浏览器中运行。
+
+```bash
+# 启动 Web 后端
+python web_frontend/app.py
+```
+
+浏览器打开 `http://127.0.0.1:5000`，在输入框填写训练需求，点击「开始训练」。
+
+- **前后端分离**：浏览器 JS 前端 ↔ Flask 后端（`/run` SSE 接口）↔ `auto_train4.0.py`
+- 实时流式日志
+- 白色卡片 + 蓝紫渐变背景
+- 支持 `Ctrl + Enter` 快捷键
+
+### PyQt 桌面前端
+
+基于 PyQt5 的桌面客户端，无需浏览器。
+
+```bash
+python pyqt_frontend/main.py
+```
+
+- **前后端分离**：PyQt UI（`main.py`）↔ 后台 Worker（`backend.py` / `QThread`）↔ `auto_train4.0.py`
+- 通过 Qt 信号实时返回日志
+- 与 Web 前端相同的蓝紫渐变 + 白色卡片风格
+- 字体已整体放大两号，更适合桌面查看
 
 ---
 
@@ -390,23 +465,6 @@ export DEEPSEEK_API_KEY="sk-xxx"
 
 ---
 
-## 项目结构
-
-```text
-auto_train4.0.py              # 4.0 主入口
-autotrain4/
-  ├── common.py               # 任务类型映射、常量、默认 WebBridge 配置
-  ├── nlu.py                  # 自然语言意图解析（含 test 意图、数据增强解析）
-  ├── resolver.py             # LLM 驱动的数据集匹配与类别对齐
-  ├── config_builder.py       # 配置生成、超参 tuning、LLM 训练顾问
-  ├── judge.py                # DeepSeek 第三层需求判断
-  ├── llm_client.py           # LLM 客户端（OpenAI 兼容 / DeepSeek）
-  ├── inference_client.py     # DLCV 推理接口客户端
-  └── evaluator.py            # 推理结果评估与对比报告生成
-```
-
----
-
 ## 平台 exe 路径
 
 AutoTrain 4.0 会按以下优先级自动探测 DLCV 训练平台可执行文件：
@@ -459,6 +517,43 @@ python auto_train4.0.py --prompt "测试刚刚训练的分类模型" --baseline-
 # 用自然语言触发 dry-run
 python auto_train4.0.py --prompt "只生成一个分类模型的 dva 配置，不要开始训练"
 ```
+
+---
+
+## 常见问题
+
+### Q: 为什么前端录屏文件要先关闭浏览器窗口才会重命名？
+
+A: Playwright 在浏览器窗口/context 存活期间一直持有视频文件句柄。代码必须在 `page → context → browser → playwright` 全部关闭后，才能把 `record/<hash>.webm` 重命名为 `record/<项目名>_<训练结束时间>.webm`。所以重命名发生在关闭窗口时。
+
+### Q: PyQt 前端和 Web 前端有什么区别？
+
+A: 两者都是可选界面，最终都调用 `auto_train4.0.py`：
+
+- Web 前端：浏览器访问，通过 HTTP/SSE 与 Flask 后端通信。
+- PyQt 前端：桌面窗口，通过 Qt 信号与本地 Worker 线程通信。
+
+核心训练逻辑完全相同，选一个用即可。
+
+### Q: 可以只生成配置不训练吗？
+
+A: 可以，使用 `--generate-config-only`：
+
+```bash
+python auto_train4.0.py --prompt "训练一个分类模型" --generate-config-only
+```
+
+### Q: 数据集匹配失败怎么办？
+
+A: 常见原因：
+
+1. LLM 置信度低于 `--auto-threshold`（默认 0.55），可提高阈值或直接用 `--folder` 指定。
+2. 用户类别与数据集类别不匹配，可检查 `--scan-dir` 下的文件夹结构。
+3. LLM 未配置或网络不可用，需确认 API key。
+
+### Q: 测试模式为什么需要推理服务？
+
+A: 测试模式会调用本地 DLCV 推理接口（默认 `http://127.0.0.1:9890`）对新模型和 baseline 跑推理。如果服务未启动，测试会失败。
 
 ---
 
