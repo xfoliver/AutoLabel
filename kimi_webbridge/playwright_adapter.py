@@ -217,8 +217,8 @@ class PlaywrightWebBridgeAdapter(BaseWebBridge):
                     video = self._page.video
                     if video:
                         video_path = video.path()
-                except Exception as e:
-                    print(f"[PlaywrightWebBridge] 获取 video path 失败: {e}")
+                except Exception:
+                    pass
                 self._page.close()
                 self._page = None
             if self._context:
@@ -235,7 +235,6 @@ class PlaywrightWebBridgeAdapter(BaseWebBridge):
 
         # 必须在 context / browser / playwright 全部关闭后重命名，
         # 否则 Windows 上 Playwright 仍持有视频文件句柄，会导致 WinError 32。
-        print(f"[PlaywrightWebBridge] close() record_frontend={self.record_frontend}, video_path={video_path}")
         if video_path and self.record_frontend:
             self._save_recording(video_path)
         elif video_path:
