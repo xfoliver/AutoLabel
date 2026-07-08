@@ -909,8 +909,11 @@ class PlaywrightWebBridgeAdapter(BaseWebBridge):
         """
         在数据增强弹窗中勾选/取消某个增强策略。
         兼容 Element UI 的自定义 checkbox（小正方形）以及原生 checkbox。
+        若当前弹窗没有该选项，则跳过并记录警告，避免任务中断。
         """
-        self._wait_for_text(option, timeout=10)
+        if not self._is_text_visible(option):
+            print(f"[PlaywrightWebBridge] 数据增强弹窗中未找到选项 '{option}'，跳过")
+            return
 
         js_code = f"""
         (args) => {{

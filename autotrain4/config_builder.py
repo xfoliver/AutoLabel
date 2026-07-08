@@ -178,7 +178,9 @@ class ConfigBuilder:
                 hp[key] = value
             logger.info("LLM 顾问推荐超参: %s", recommended_hp)
 
-        if recommended_aug:
+        # 只有当用户明确提到数据增强时，才接受 LLM 顾问推荐的增强方案；
+        # 否则保持 ui_flow 中已有的设置（通常为空），避免前端误点增强菜单。
+        if recommended_aug and self.intent.mentions_augmentation:
             normalized = self._normalize_augmentation_options(recommended_aug)
             if normalized:
                 ui_flow["data_augmentation"] = normalized

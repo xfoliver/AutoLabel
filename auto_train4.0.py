@@ -90,11 +90,15 @@ class AutoTrain4Orchestrator:
         self.intent = parser.parse(self.args.prompt)
         logger.info("解析意图: %s", self.intent.to_dict())
 
-        # 2. 测试模式：直接对最新模型 + 训练集跑推理
+        # 2. 非训练/测试意图：进入通用对话兜底
+        if not self.intent.needs_training and not self.args.test_latest:
+            return self._run_general_chat()
+
+        # 3. 测试模式：直接对最新模型 + 训练集跑推理
         if self.args.test_latest or self.intent.mode == "test":
             return self._run_test_latest()
 
-        # 3. 语义匹配数据集（或被 --folder 覆盖）
+        # 4. 语义匹配数据集（或被 --folder 覆盖）
         self.match = self._resolve_match()
         logger.info("匹配数据集: %s", self.match.to_dict())
 
@@ -212,6 +216,32 @@ class AutoTrain4Orchestrator:
             image_dir=dataset_dir,
             baseline_model_path=self.args.baseline_model,
         )
+        return 0
+
+    def _run_general_chat(self) -> int:
+        """通用对话兜底：当用户输入不是训练/测试意图时，用 LLM 做友好回复。"""
+        logger.info("========== AUTO TRAIN 4.0 通用对话 ==========")
+        logger.info("用户输入与训练/测试无关，进入通用对话模式")
+
+        system_msg = (
+            "你是 DLCV AI 训练平台的智能助手。用户当前输入看起来不是想启动训练或测试任务，"
+            "请用友好、简洁的中文回答用户的问题。如果用户是在闲聊，可以正常回应；"
+            "如果用户其实想问训练相关的问题，也可以简要介绍本平台的功能。"
+        )
+        try:
+            answer = self.llm.chat(
+                [
+                    {"role": "system", "content": system_msg},
+                    {"role": "user", "content": self.args.prompt},
+                ]
+            )
+            if answer:
+                logger.info("[助手回复] %s", answer)
+            else:
+                logger.info("[助手回复] 抱歉，我没有理解你的问题，可以再说一次吗？")
+        except Exception as e:
+            logger.error("通用对话调用 LLM 失败: %s", e)
+            return 1
         return 0
 
     def _find_latest_config(self) -> Optional[Path]:
@@ -437,7 +467,7 @@ def main() -> int:
     parser.add_argument(
         "--full-train",
         action="store_true",
-        help="训练集拉到 100%%（train_set_val=100, val_set_val=0），用于可复现性验证",
+        help="训练集拉到 100%%（train_set_val=100，验证集保持模板默认值），用于可复现性验证",
     )
     parser.add_argument(
         "--test-image-dir",

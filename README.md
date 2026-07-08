@@ -22,6 +22,7 @@ AutoTrain 4.0 是 DLCV AI 训练平台的**自然语言入口**。你只需用�
 - **前端录屏**：默认录制完整前端自动化流程，保存为 `record/<项目名>_<训练结束时间>.webm`。
 - **一键测试最新模型**：无需手动找模型路径和测试集，自动复用最近一次训练的配置。
 - **自动推理对比**：可与基准模型（baseline）对比同一张测试集，统计结果一致率。
+- **通用对话兜底**：当用户输入与训练/测试无关时（闲聊、概念提问等），系统不会报错，而是调用 LLM 直接回复。
 - **可读的概率格式**：report 中的 score/probability 使用普通小数（如 `0.99470669`），不使用科学计数法。
 
 ---
@@ -154,7 +155,15 @@ python auto_train4.0.py --prompt "训练一个分类模型，使用随机翻转�
 - 随机调整对比度
 - 随机 JPG 编码
 
-### 7. 训练完成后自动关闭浏览器窗口
+### 7. 闲聊或提问（通用对话兜底）
+
+如果输入与训练/测试无关，系统不会报错，而是调用 LLM 进行对话回复：
+
+```bash
+python auto_train4.0.py --prompt "OCR 和目标检测有什么区别？"
+```
+
+### 8. 训练完成后自动关闭浏览器窗口
 
 默认训练完成后浏览器窗口保持打开。如需自动关闭：
 
@@ -162,7 +171,7 @@ python auto_train4.0.py --prompt "训练一个分类模型，使用随机翻转�
 python auto_train4.0.py --prompt "训练一个分类模型" --no-keep-browser-open
 ```
 
-### 8. 关闭前端录屏
+### 9. 关闭前端录屏
 
 默认会录制完整前端自动化流程并保存到 `record/` 目录。如需关闭：
 
@@ -170,7 +179,7 @@ python auto_train4.0.py --prompt "训练一个分类模型" --no-keep-browser-op
 python auto_train4.0.py --prompt "训练一个分类模型" --no-record
 ```
 
-### 9. 测试刚刚训练好的模型（训练集 = 测试集）
+### 10. 测试刚刚训练好的模型（训练集 = 测试集）
 
 ```bash
 # 方式一：用自然语言触发测试意图
@@ -190,7 +199,7 @@ python auto_train4.0.py --prompt "测试分类模型" --test-latest --latest-con
 3. 在 `work_dir` 里找最新的 `.dvp` 模型。
 4. 用训练集作为测试集，调用推理接口生成 `test_report_{模型名}.json`。
 
-### 10. 与基准模型对比
+### 11. 与基准模型对比
 
 ```bash
 python auto_train4.0.py --prompt "测试刚才训练的分类模型" --baseline-model "Baseline Models/CLS-baseline_20260630_154101.dvp"

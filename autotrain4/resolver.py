@@ -164,11 +164,17 @@ class DatasetResolver:
         return None
 
     def _detect_categories(self, dataset_dir: Path) -> Tuple[List[str], int]:
-        """探测数据集内部类别（按子文件夹）和图片总数。"""
+        """探测数据集内部类别（按子文件夹）和图片总数。
+
+        分类任务：子文件夹即类别，统计每个子文件夹内的图片。
+        OCR/检测等任务：图片可能直接放在根目录，找不到子文件夹类别时回退统计根目录图片。
+        """
         categories: List[str] = []
         total = 0
         if not dataset_dir.exists():
             return categories, total
+
+        # 1. 先按分类任务风格探测子文件夹类别
         for subdir in dataset_dir.iterdir():
             if not subdir.is_dir():
                 continue
@@ -182,6 +188,17 @@ class DatasetResolver:
             if count > 0:
                 categories.append(subdir.name)
                 total += count
+
+        # 2. 没找到分类式子文件夹时，回退统计根目录图片（OCR/检测风格）
+        if not categories:
+            root_count = sum(
+                1
+                for f in dataset_dir.iterdir()
+                if f.is_file() and f.suffix.lower() in IMAGE_EXTENSIONS
+            )
+            if root_count > 0:
+                total = root_count
+
         return categories, total
 
     def _score_folder(self, folder: Path, intent: TrainIntent) -> DatasetMatch:

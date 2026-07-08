@@ -36,7 +36,9 @@ class TrainIntent:
     dataset_hint: str = ""
     mode: str = "train"  # train / dry_run / evaluate / test
     raw_prompt: str = ""
+    needs_training: bool = True
     data_analysis: bool = True
+    mentions_augmentation: bool = False
     data_augmentation: List[str] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -46,7 +48,9 @@ class TrainIntent:
             "dataset_hint": self.dataset_hint,
             "mode": self.mode,
             "raw_prompt": self.raw_prompt,
+            "needs_training": self.needs_training,
             "data_analysis": self.data_analysis,
+            "mentions_augmentation": self.mentions_augmentation,
             "data_augmentation": self.data_augmentation,
         }
 
@@ -81,14 +85,22 @@ class IntentParser:
         mode = self._canonicalize_mode(parsed.get("mode", "train"), prompt)
         categories = self._canonicalize_categories(parsed.get("categories", []))
         dataset_hint = str(parsed.get("dataset_hint", "")).strip()
+        needs_training = bool(parsed.get("needs_training", True))
         data_analysis = bool(parsed.get("data_analysis", True))
+        mentions_augmentation = bool(parsed.get("mentions_augmentation", False))
         data_augmentation = self._canonicalize_data_augmentation(
             parsed.get("data_augmentation", [])
         )
 
+        # 只有当用户明确提到数据增强时才保留增强选项，否则清空，避免前端误点增强菜单。
+        if data_augmentation and not mentions_augmentation:
+            logger.warning("LLM 返回了数据增强选项但用户未明确提及，已忽略: %s", data_augmentation)
+            data_augmentation = []
+
         if not task_type:
             # 测试类指令可能只含"刚刚训练的模型"而不含任务类型，允许为空，由下游推断
-            if mode != "test":
+            # 非训练/测试意图（闲聊）也允许 task_type 为空
+            if mode != "test" and needs_training:
                 raise ValueError(f"LLM 未返回有效任务类型: {parsed}")
 
         # dry_run 覆盖
@@ -101,7 +113,9 @@ class IntentParser:
             dataset_hint=dataset_hint,
             mode=mode,
             raw_prompt=prompt,
+            needs_training=needs_training,
             data_analysis=data_analysis,
+            mentions_augmentation=mentions_augmentation,
             data_augmentation=data_augmentation,
         )
 

@@ -14,7 +14,7 @@ import sys
 from typing import Optional
 
 from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QFont
+from PyQt5.QtGui import QColor, QFont, QPalette
 from PyQt5.QtWidgets import (
     QApplication,
     QHBoxLayout,
@@ -124,30 +124,32 @@ class MainWindow(QMainWindow):
                 );
             }
             QLabel#title {
-                font-size: 38px;
+                font-size: 44px;
                 font-weight: bold;
                 color: #4c1d95;
             }
             QLabel#subtitle {
-                font-size: 16px;
+                font-size: 18px;
                 color: #6b7280;
                 margin-bottom: 10px;
             }
             QLabel#inputLabel {
-                font-size: 16px;
+                font-size: 18px;
                 font-weight: bold;
                 color: #374151;
             }
             QTextEdit#promptInput {
-                background: white;
+                background-color: #ffffff;
                 border: 2px solid #e5e7eb;
                 border-radius: 16px;
                 padding: 16px;
-                font-size: 16px;
+                font-size: 18px;
                 color: #1f2937;
             }
             QTextEdit#promptInput:focus {
                 border: 2px solid #667eea;
+                background-color: #ffffff;
+                color: #1f2937;
             }
             QPushButton#startBtn {
                 background: qlineargradient(
@@ -156,7 +158,7 @@ class MainWindow(QMainWindow):
                     stop:1 #764ba2
                 );
                 color: white;
-                font-size: 17px;
+                font-size: 19px;
                 font-weight: bold;
                 border: none;
                 border-radius: 12px;
@@ -175,7 +177,7 @@ class MainWindow(QMainWindow):
             QPushButton#clearBtn {
                 background: #f3f4f6;
                 color: #4b5563;
-                font-size: 17px;
+                font-size: 19px;
                 font-weight: bold;
                 border: 1px solid #e5e7eb;
                 border-radius: 12px;
@@ -185,12 +187,12 @@ class MainWindow(QMainWindow):
                 background: #e5e7eb;
             }
             QLabel#logTitle {
-                font-size: 16px;
+                font-size: 18px;
                 font-weight: bold;
                 color: #374151;
             }
             QLabel#statusLabel {
-                font-size: 14px;
+                font-size: 16px;
                 font-weight: bold;
                 color: #6b7280;
                 background: #e5e7eb;
@@ -203,15 +205,22 @@ class MainWindow(QMainWindow):
                 border-radius: 16px;
                 padding: 16px;
                 font-family: "Consolas", "SFMono-Regular", monospace;
-                font-size: 14px;
+                font-size: 16px;
                 color: #1f2937;
             }
             QLabel#footer {
-                font-size: 14px;
+                font-size: 16px;
                 color: #9ca3af;
             }
             """
         )
+
+        # 显式设置输入框调色板，防止系统深色主题或 Qt 默认调色板导致文字/背景颜色异常
+        palette = self.prompt_input.palette()
+        palette.setColor(QPalette.Base, QColor("#ffffff"))
+        palette.setColor(QPalette.Text, QColor("#1f2937"))
+        palette.setColor(QPalette.PlaceholderText, QColor("#9ca3af"))
+        self.prompt_input.setPalette(palette)
 
     def _start_run(self) -> None:
         prompt = self.prompt_input.toPlainText().strip()
@@ -287,7 +296,7 @@ class MainWindow(QMainWindow):
 
 def main() -> None:
     app = QApplication(sys.argv)
-    font = QFont("Microsoft YaHei", 12)
+    font = QFont("Microsoft YaHei", 14)
     app.setFont(font)
 
     window = MainWindow()

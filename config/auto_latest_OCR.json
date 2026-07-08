@@ -7,12 +7,12 @@
     "backend_ready_interval": 2.0
   },
   "project": {
-    "name": "1-OCR-20260701_172822",
+    "name": "1-OCR-20260708_160157",
     "task_type": "OCR",
     "description": "自动化 OCR 训练项目",
     "dataset_dir": "C:\\Users\\Admin\\kimi_gui_automation\\AI训练平台测试\\1-OCR\\训练集",
     "work_dir": "C:\\Users\\Admin\\kimi_gui_automation\\AI训练平台测试\\1-OCR\\work",
-    "dva_file": "C:\\Users\\Admin\\kimi_gui_automation\\AI训练平台测试\\1-OCR\\1-OCR-20260701_172822.dva"
+    "dva_file": "C:\\Users\\Admin\\kimi_gui_automation\\AI训练平台测试\\1-OCR\\1-OCR-20260708_160157.dva"
   },
   "training": {
     "auto_start": true,
@@ -64,6 +64,23 @@
     "screenshot_dir": "./webbridge_screenshots",
     "headless": false,
     "browser": "chromium",
-    "slow_mo": 50
+    "slow_mo": 300,
+    "step_delay": 1.0,
+    "wait_loading_done": false,
+    "post_click_delay": 2.0,
+    "keep_browser_open": true,
+    "record_frontend": true,
+    "record_dir": "./record",
+    "record_size": {
+      "width": 1280,
+      "height": 720
+    }
+  },
+  "ui_flow": {
+    "data_analysis": true,
+    "data_augmentation": [
+      "随机调整亮度",
+      "随机调整对比度"
+    ]
   }
 }

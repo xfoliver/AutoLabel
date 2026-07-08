@@ -7,12 +7,12 @@
     "backend_ready_interval": 2.0
   },
   "project": {
-    "name": "3-DET-20260701_160310",
+    "name": "3-DET-20260708_161254",
     "task_type": "目标检测",
     "description": "自动化目标检测训练项目",
     "dataset_dir": "C:\\Users\\Admin\\kimi_gui_automation\\AI训练平台测试\\3-DET\\训练集",
     "work_dir": "C:\\Users\\Admin\\kimi_gui_automation\\AI训练平台测试\\3-DET\\work",
-    "dva_file": "C:\\Users\\Admin\\kimi_gui_automation\\AI训练平台测试\\3-DET\\3-DET-20260701_160310.dva"
+    "dva_file": "C:\\Users\\Admin\\kimi_gui_automation\\AI训练平台测试\\3-DET\\3-DET-20260708_161254.dva"
   },
   "training": {
     "auto_start": true,
@@ -37,7 +37,7 @@
         "width": 640,
         "height": 640
       },
-      "batch_size": 2,
+      "batch_size": 8,
       "lr": 0.001,
       "enable_fp16": true,
       "train_num_workers": 2,
@@ -67,6 +67,29 @@
     "screenshot_dir": "./webbridge_screenshots",
     "headless": false,
     "browser": "chromium",
-    "slow_mo": 50
+    "slow_mo": 300,
+    "step_delay": 1.0,
+    "wait_loading_done": false,
+    "post_click_delay": 2.0,
+    "keep_browser_open": true,
+    "record_frontend": true,
+    "record_dir": "./record",
+    "record_size": {
+      "width": 1280,
+      "height": 720
+    }
+  },
+  "ui_flow": {
+    "data_analysis": true,
+    "data_augmentation": [
+      "调整图像大小",
+      "随机比例缩放",
+      "随机翻转",
+      "随机固定角度旋转",
+      "随机裁剪",
+      "随机调整亮度",
+      "随机调整对比度",
+      "随机JPG编码"
+    ]
   }
 }
