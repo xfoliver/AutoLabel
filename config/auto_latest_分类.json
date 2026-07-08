@@ -7,12 +7,12 @@
     "backend_ready_interval": 2.0
   },
   "project": {
-    "name": "2-CLS-白芷_防己-20260629_132130",
+    "name": "2-CLS-白芷_防己-20260708_104049",
     "task_type": "分类",
     "description": "自动化分类训练项目",
     "dataset_dir": "C:\\Users\\Admin\\kimi_gui_automation\\AI训练平台测试\\2-CLS\\训练集",
     "work_dir": "C:\\Users\\Admin\\kimi_gui_automation\\AI训练平台测试\\2-CLS\\work",
-    "dva_file": "C:\\Users\\Admin\\kimi_gui_automation\\AI训练平台测试\\2-CLS\\2-CLS-白芷_防己-20260629_132130.dva"
+    "dva_file": "C:\\Users\\Admin\\kimi_gui_automation\\AI训练平台测试\\2-CLS\\2-CLS-白芷_防己-20260708_104049.dva"
   },
   "training": {
     "auto_start": true,
@@ -74,6 +74,16 @@
     "screenshot_dir": "./webbridge_screenshots",
     "headless": false,
     "browser": "chromium",
-    "slow_mo": 50
+    "slow_mo": 300,
+    "step_delay": 1.0,
+    "wait_loading_done": false,
+    "post_click_delay": 2.0,
+    "keep_browser_open": true
+  },
+  "ui_flow": {
+    "data_analysis": true,
+    "data_augmentation": [
+      "随机翻转"
+    ]
   }
 }

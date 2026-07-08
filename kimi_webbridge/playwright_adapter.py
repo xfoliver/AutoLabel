@@ -17,13 +17,15 @@
         "frontend_url": "http://localhost:8843",
         "headless": false,
         "browser": "chromium",
-        "slow_mo": 50,
+        "slow_mo": 300,
+        "step_delay": 1.0,
         "screenshot_dir": "./webbridge_screenshots",
         "timeout": 120
       }
     }
 """
 
+import json
 import re
 import time
 from pathlib import Path
@@ -59,15 +61,33 @@ class PlaywrightWebBridgeAdapter(BaseWebBridge):
         "use_thread_dataloader": {"label": "使用线程读取数据", "type": "checkbox"},
     }
 
+    # 数据增强面板里可能出现的选项（用于归一化和日志）
+    DATA_AUGMENTATION_OPTIONS = [
+        "调整图像大小",
+        "随机比例缩放",
+        "随机翻转",
+        "随机固定角度旋转",
+        "随机裁剪",
+        "随机调整亮度",
+        "随机调整对比度",
+        "随机JPG编码",
+    ]
+
     def __init__(self, config: Dict[str, Any]):
         super().__init__(config)
         self.browser_type = config.get("browser", "chromium").lower()
         self.headless = config.get("headless", False)
-        self.slow_mo = int(config.get("slow_mo", 50))
+        self.slow_mo = int(config.get("slow_mo", 300))
+        self.step_delay = float(config.get("step_delay", 1.0))
+        self.wait_loading_done = bool(config.get("wait_loading_done", False))
+        self.post_click_delay = float(config.get("post_click_delay", 2.0))
         self.launch_args = config.get("launch_args", ["--disable-blink-features=AutomationControlled"])
+        self.video_dir = config.get("video_dir")
+        self.video_size = config.get("video_size", {"width": 1280, "height": 720})
         Path(self.screenshot_dir).mkdir(parents=True, exist_ok=True)
         self._playwright = None
         self._browser = None
+        self._context = None
         self._page: Optional[Page] = None
 
     # ------------------------------------------------------------------
@@ -85,15 +105,26 @@ class PlaywrightWebBridgeAdapter(BaseWebBridge):
                 slow_mo=self.slow_mo,
                 args=self.launch_args,
             )
+
+            context_options: Dict[str, Any] = {}
+            if self.video_dir:
+                video_dir = Path(self.video_dir).resolve()
+                video_dir.mkdir(parents=True, exist_ok=True)
+                context_options["record_video_dir"] = str(video_dir)
+                context_options["record_video_size"] = self.video_size
+
+            self._context = self._browser.new_context(**context_options)
             self.session_id = f"playwright-{int(time.time())}"
         except Exception as e:
             raise WebBridgeError(f"Playwright 启动浏览器失败: {e}")
 
     def navigate(self, url: str) -> WebBridgeResult:
-        if not self._browser:
+        if not self._context:
             self.connect()
         try:
-            self._page = self._browser.new_page()
+            if self._page and not self._page.is_closed():
+                self._page.close()
+            self._page = self._context.new_page()
             self._page.goto(url, wait_until="networkidle", timeout=self.timeout * 1000)
             return WebBridgeResult(success=True, message=f"navigated to {url}")
         except PlaywrightTimeoutError as e:
@@ -110,6 +141,7 @@ class PlaywrightWebBridgeAdapter(BaseWebBridge):
         self._ensure_page()
         try:
             self._page.get_by_role("button", name=element_description).click(timeout=10000)
+            self._sleep_step()
             return WebBridgeResult(success=True)
         except Exception as e:
             raise WebBridgeError(f"点击失败: {e}")
@@ -118,6 +150,7 @@ class PlaywrightWebBridgeAdapter(BaseWebBridge):
         self._ensure_page()
         try:
             self._set_input_by_label(element_description, value)
+            self._sleep_step()
             return WebBridgeResult(success=True)
         except Exception as e:
             raise WebBridgeError(f"填充失败: {e}")
@@ -149,8 +182,20 @@ class PlaywrightWebBridgeAdapter(BaseWebBridge):
     def close(self) -> None:
         try:
             if self._page:
+                video_path = None
+                try:
+                    video = self._page.video
+                    if video:
+                        video_path = video.path()
+                except Exception:
+                    pass
                 self._page.close()
                 self._page = None
+                if video_path:
+                    print(f"[PlaywrightWebBridge] 页面录制视频: {video_path}")
+            if self._context:
+                self._context.close()
+                self._context = None
             if self._browser:
                 self._browser.close()
                 self._browser = None
@@ -162,9 +207,114 @@ class PlaywrightWebBridgeAdapter(BaseWebBridge):
         self.session_id = None
 
     # ------------------------------------------------------------------
+    # 完整训练流程：数据分析 → 数据增强 → 训练参数 → 开始训练
+    # ------------------------------------------------------------------
+    def run_training_workflow(
+        self,
+        ui_flow: Dict[str, Any],
+        hyperparameters: Dict[str, Any],
+    ) -> WebBridgeResult:
+        """
+        从项目信息页开始，按菜单顺序完成：
+        数据分析 → 数据增强（如需要）→ 训练参数 → 开始训练。
+        """
+        self._ensure_page()
+
+        # 1. 数据分析
+        if ui_flow.get("data_analysis", True):
+            self._log_step("点击侧边菜单：数据分析")
+            self._click_sidebar("数据分析")
+            self._sleep_step(2.0)
+
+            self._log_step("点击：加载数据集")
+            self._click_text("加载数据集")
+            self._wait_loading_done(timeout=60)
+            self._sleep_step(1.0)
+
+            self._log_step("等待并点击：图像分布旁边的加载尺寸分布")
+            self._wait_for_text("图像分布", timeout=30)
+            self._click_near_anchor("加载尺寸分布", "图像分布")
+            self._wait_loading_done(timeout=60)
+            self._sleep_step(1.0)
+
+        # 2. 数据增强
+        aug_options = ui_flow.get("data_augmentation", [])
+        if aug_options:
+            self._log_step("点击侧边菜单：数据增强")
+            self._click_sidebar("数据增强")
+            self._sleep_step(2.0)
+
+            self._log_step("点击页面上的数据增强按钮，打开增强策略弹窗")
+            self._click_page_button("数据增强")
+            self._sleep_step(2.0)
+
+            # 等待增强策略弹窗渲染出来（以第一个选项为标志）
+            first_opt = self._normalize_augmentation_name(aug_options[0])
+            if first_opt:
+                self._wait_for_text(first_opt, timeout=10)
+
+            for opt in aug_options:
+                normalized = self._normalize_augmentation_name(opt)
+                if not normalized:
+                    self._log_step(f"跳过未识别的增强选项: {opt}")
+                    continue
+                self._log_step(f"勾选数据增强：{normalized}")
+                self._check_augmentation_option(normalized)
+                self._sleep_step(0.8)
+
+            self._log_step("点击数据增强弹窗确认/保存")
+            # 可能先弹确认窗，再弹"数据增强操作已修改,是否保存"，需要连续处理
+            for _ in range(3):
+                try:
+                    self._click_dialog_confirm(["保存", "确定", "确认", "是", "Yes", "OK"])
+                except WebBridgeError:
+                    break
+                self._sleep_step(1.0)
+                # 检查是否还有弹窗
+                try:
+                    has_dialog = self._page.evaluate(
+                        """() => !!document.querySelector('.el-message-box, .ant-modal, [role=dialog], .modal, .dialog')"""
+                    )
+                    if not has_dialog:
+                        break
+                except Exception:
+                    break
+            self._sleep_step(1.5)
+
+            # 选择完数据增强后，点击页面右下角的保存按钮（会触发二次确认弹窗）
+            self._log_step("点击数据增强页面右下角保存按钮")
+            self._click_page_button("保存")
+            self._sleep_step(2.0)
+
+            self._log_step("处理保存后的确认弹窗")
+            self._handle_confirm_dialog()
+            self._sleep_step(1.0)
+
+        # 3. 训练参数
+        self._log_step("点击侧边菜单：训练参数")
+        self._click_sidebar("训练参数")
+        self._ensure_parameter_page()
+
+        # 4. 设置超参并保存（不点开始训练，由下一步统一点）
+        self.apply_hyperparameters(hyperparameters, start_training=False)
+
+        # 5. 开始训练
+        self._log_step("点击：开始训练")
+        self._click_button("开始训练")
+        self._sleep_step(2.0)
+        self._handle_confirm_dialog()
+        self._sleep_step(1.0)
+
+        return WebBridgeResult(success=True, message="完整训练流程已执行完毕")
+
+    # ------------------------------------------------------------------
     # 训练参数自动化
     # ------------------------------------------------------------------
-    def apply_hyperparameters(self, hyperparameters: Dict[str, Any]) -> WebBridgeResult:
+    def apply_hyperparameters(
+        self,
+        hyperparameters: Dict[str, Any],
+        start_training: bool = True,
+    ) -> WebBridgeResult:
         """在训练参数页批量设置超参并触发训练。"""
         if not hyperparameters:
             return WebBridgeResult(success=True, message="没有超参需要设置")
@@ -172,6 +322,7 @@ class PlaywrightWebBridgeAdapter(BaseWebBridge):
         self._ensure_page()
         self._wait_for_parameter_page()
         self._expand_sections()
+        self._sleep_step(1.0)
 
         skipped: List[str] = []
         for key, value in hyperparameters.items():
@@ -185,7 +336,9 @@ class PlaywrightWebBridgeAdapter(BaseWebBridge):
             meta = self.HP_CONTROL_MAP[key]
             try:
                 display_value = self._format_value(value, meta)
+                self._log_step(f"设置 {meta['label']} = {display_value}")
                 self._set_field(meta["label"], display_value, meta["type"])
+                self._sleep_step()
             except WebBridgeError as e:
                 err_msg = str(e)
                 # 页面中不存在该控件时仅跳过，避免不同任务类型字段不一致导致整体失败
@@ -200,20 +353,21 @@ class PlaywrightWebBridgeAdapter(BaseWebBridge):
             print(f"[PlaywrightWebBridge] 以下参数在当前页面未找到对应控件，已跳过: {skipped}")
 
         # 保存
+        self._log_step("点击：保存")
         self._click_button("保存")
-        time.sleep(1.0)
+        self._sleep_step(2.0)
 
-        # 开始训练
-        self._click_button("开始训练")
-        time.sleep(2.0)
+        if start_training:
+            # 开始训练
+            self._log_step("点击：开始训练")
+            self._click_button("开始训练")
+            self._sleep_step(2.0)
 
-        # 处理可能出现的确认弹窗
-        self._handle_confirm_dialog()
+            # 处理可能出现的确认弹窗
+            self._handle_confirm_dialog()
+            self._sleep_step(1.0)
 
-        # 再等待一下，让后端创建 training session
-        time.sleep(1.0)
-
-        return WebBridgeResult(success=True, message="训练参数已设置并开始训练")
+        return WebBridgeResult(success=True, message="训练参数已设置并保存")
 
     # ------------------------------------------------------------------
     # 内部辅助
@@ -223,23 +377,20 @@ class PlaywrightWebBridgeAdapter(BaseWebBridge):
             raise WebBridgeError("Playwright 页面未初始化，请先调用 navigate()")
 
     def _wait_for_parameter_page(self, timeout: int = 60) -> None:
+        """等待训练参数页真正加载：URL 包含 parameter_edit 且页面出现“批量大小"。"""
         start = time.time()
         last_log = start
         while time.time() - start < timeout:
             try:
-                # 页面存在“开始训练”或“批量大小”即认为参数页已加载
-                self._page.wait_for_selector("text=开始训练", timeout=500)
-                return
-            except PlaywrightTimeoutError:
-                pass
-            try:
-                self._page.wait_for_selector("text=批量大小", timeout=500)
-                return
-            except PlaywrightTimeoutError:
+                url_ok = "parameter_edit" in self._page.url
+                has_batch = self._page.locator("text=批量大小").count() > 0
+                if url_ok and has_batch:
+                    return
+            except Exception:
                 pass
             now = time.time()
             if now - last_log >= 10:
-                print(f"[PlaywrightWebBridge] 等待训练参数页... 已等待 {int(now - start)}s")
+                print(f"[PlaywrightWebBridge] 等待训练参数页... 已等待 {int(now - start)}s, url={self._page.url if self._page else 'none'}")
                 last_log = now
             time.sleep(0.5)
         raise WebBridgeError("等待训练参数页超时")
@@ -392,7 +543,7 @@ class PlaywrightWebBridgeAdapter(BaseWebBridge):
 
     def _handle_confirm_dialog(self) -> None:
         """仅当检测到 dialog 时才点击确认。"""
-        time.sleep(0.5)
+        self._sleep_step(0.5)
         try:
             has_dialog = self._page.evaluate(
                 """() => !!document.querySelector('.el-message-box, .ant-modal, [role=dialog], .modal, .dialog')"""
@@ -402,13 +553,354 @@ class PlaywrightWebBridgeAdapter(BaseWebBridge):
         except Exception:
             return
 
-        for confirm_text in ["确定", "确认", "是", "Yes", "OK"]:
+        try:
+            self._click_dialog_confirm(["保存", "确定", "确认", "是", "Yes", "OK"])
+            self._sleep_step(0.3)
+        except WebBridgeError:
+            pass
+
+    def _click_dialog_confirm(self, candidates: Optional[List[str]] = None) -> None:
+        """
+        在弹出的 dialog 里点击确认按钮。
+        优先匹配候选文字，匹配不到则点 dialog 里最后一个按钮（通常是确认）。
+        """
+        keywords = candidates or ["保存", "确定", "确认", "是", "Yes", "OK", "应用"]
+        js_code = f"""
+        () => {{
+            const keywords = {json.dumps(keywords, ensure_ascii=False)};
+            const dialogs = document.querySelectorAll('.el-message-box, .ant-modal, [role=dialog], .modal, .dialog');
+            if (!dialogs.length) return {{error: 'no dialog found'}};
+            const dialog = dialogs[dialogs.length - 1];
+            let buttons = Array.from(dialog.querySelectorAll('button, [role="button"], .el-button, .ant-btn'));
+            if (!buttons.length) return {{error: 'no buttons in dialog'}};
+
+            for (const kw of keywords) {{
+                const btn = buttons.find(b => b.textContent.trim().includes(kw));
+                if (btn) {{
+                    btn.scrollIntoView({{block: 'center'}});
+                    btn.click();
+                    return {{ok: true, text: btn.textContent.trim()}};
+                }}
+            }}
+
+            // 兜底：点最后一个按钮（通常右边是确认）
+            const last = buttons[buttons.length - 1];
+            last.scrollIntoView({{block: 'center'}});
+            last.click();
+            return {{ok: true, text: last.textContent.trim(), fallback: true}};
+        }}
+        """
+        result = self._page.evaluate(js_code)
+        if isinstance(result, dict) and result.get("ok"):
+            self._log_step(f"点击弹窗按钮: {result.get('text')}")
+            return
+        raise WebBridgeError(result.get("error") or "点击弹窗确认按钮失败")
+
+    def _sleep_step(self, seconds: Optional[float] = None) -> None:
+        """每步之间停顿，便于肉眼观察。"""
+        time.sleep(seconds if seconds is not None else self.step_delay)
+
+    def _log_step(self, message: str) -> None:
+        """打印当前步骤，配合停顿让流程可追溯。"""
+        print(f"[PlaywrightWebBridge] {message}")
+
+    def _wait_loading_done(self, timeout: int = 30) -> None:
+        """
+        控制加载后的等待行为。
+        默认不等待 loading 结束（wait_loading_done=false），只固定停顿 post_click_delay 秒，
+        然后直接继续下一步。如需严格等待 spinner 消失，可在配置里设 wait_loading_done=true。
+        """
+        if not self.wait_loading_done:
+            self._sleep_step(self.post_click_delay)
+            return
+
+        start = time.time()
+        while time.time() - start < timeout:
             try:
-                self._click_button(confirm_text)
-                time.sleep(0.3)
+                has_loading = self._page.evaluate(
+                    """() => {
+                        const selectors = [
+                            '.el-loading-spinner',
+                            '.el-loading-mask',
+                            '.ant-spin',
+                            '.loading',
+                            '.spinner',
+                            '[class*="loading"]',
+                            '[class*="spin"]'
+                        ];
+                        return selectors.some(s => !!document.querySelector(s));
+                    }"""
+                )
+                if not has_loading:
+                    return
+            except Exception:
+                pass
+            time.sleep(0.5)
+        print("[PlaywrightWebBridge] 等待 loading 消失超时，继续执行")
+
+    def _click_text(self, text: str) -> None:
+        """点击页面上文本匹配的元素（侧边栏菜单、普通按钮均可）。"""
+        try:
+            locator = self._page.get_by_text(text, exact=True)
+            if locator.count() > 0:
+                locator.first.click(timeout=10000)
                 return
+        except Exception:
+            pass
+
+        try:
+            locator = self._page.get_by_text(text, exact=False)
+            if locator.count() > 0:
+                locator.first.click(timeout=10000)
+                return
+        except Exception:
+            pass
+
+        # JS 兜底
+        js_code = f"""
+        () => {{
+            const text = {repr(text)};
+            let el = Array.from(document.querySelectorAll('*')).find(e => e.textContent.trim() === text || e.getAttribute('title') === text);
+            if (!el) return {{error: 'text not found: ' + text}};
+            el.scrollIntoView({{block: 'center'}});
+            el.click();
+            return {{ok: true}};
+        }}
+        """
+        result = self._page.evaluate(js_code)
+        if isinstance(result, dict) and result.get("ok"):
+            return
+        raise WebBridgeError(result.get("error") or f"点击 {text} 失败")
+
+    def _click_near_anchor(self, target: str, anchor: str) -> None:
+        """在 anchor 文字所在的区域里点击 target 文字对应的元素。"""
+        js_code = f"""
+        () => {{
+            const anchorText = {repr(anchor)};
+            const targetText = {repr(target)};
+            const all = Array.from(document.querySelectorAll('*'));
+            const anchorEl = all.find(el => Array.from(el.childNodes).some(n => n.nodeType === 3 && n.textContent.trim() === anchorText));
+            if (!anchorEl) return {{error: 'anchor not found: ' + anchorText}};
+
+            let container = anchorEl.parentElement;
+            let targetEl = null;
+            for (let i = 0; i < 10; i++) {{
+                targetEl = Array.from(container.querySelectorAll('*')).find(
+                    el => Array.from(el.childNodes).some(n => n.nodeType === 3 && n.textContent.trim() === targetText)
+                );
+                if (targetEl) break;
+                container = container.parentElement;
+                if (!container) break;
+            }}
+            if (!targetEl) return {{error: 'target not found near anchor: ' + targetText}};
+            targetEl.scrollIntoView({{block: 'center'}});
+            targetEl.click();
+            return {{ok: true}};
+        }}
+        """
+        result = self._page.evaluate(js_code)
+        if isinstance(result, dict) and result.get("ok"):
+            return
+        raise WebBridgeError(result.get("error") or f"点击 {target}（锚点 {anchor}）失败")
+
+    def _click_page_button(self, text: str) -> None:
+        """
+        点击主内容区里的按钮（排除侧边栏 aside / nav）。
+        用于区分侧边栏菜单和页面内同名的按钮，例如「数据增强」。
+        """
+        js_code = f"""
+        () => {{
+            const text = {repr(text)};
+            // 1. 优先找 button 元素
+            let candidates = Array.from(document.querySelectorAll('button, [role="button"]'))
+                .filter(el => el.textContent.trim() === text || el.getAttribute('title') === text);
+            // 2. 排除侧边栏里的
+            candidates = candidates.filter(el => !el.closest('aside') && !el.closest('nav') && !el.closest('[class*="menu"]'));
+            // 3. 没有 button 再找主内容区任意元素
+            if (candidates.length === 0) {{
+                candidates = Array.from(document.querySelectorAll('main, [class*="content"], [class*="panel"] *'))
+                    .filter(el => el.textContent.trim() === text);
+            }}
+            if (candidates.length === 0) return {{error: 'page button not found: ' + text}};
+            // 点最后一个（通常页面主按钮在菜单项之后渲染）
+            const target = candidates[candidates.length - 1];
+            target.scrollIntoView({{block: 'center'}});
+            target.click();
+            return {{ok: true, count: candidates.length}};
+        }}
+        """
+        result = self._page.evaluate(js_code)
+        if isinstance(result, dict) and result.get("ok"):
+            return
+        raise WebBridgeError(result.get("error") or f"点击页面按钮 {text} 失败")
+
+    def _set_checkbox_by_text(self, text: str, checked: bool) -> None:
+        """通过包含文本定位 checkbox（支持数据增强面板中的选项）。"""
+        try:
+            locator = self._page.locator(
+                f'input[type="checkbox"]'
+            ).filter(has=self._page.locator(f"text={text}"))
+            if locator.count() == 0:
+                locator = self._page.get_by_text(text, exact=False).locator('xpath=..').locator('input[type="checkbox"]')
+            if locator.count() > 0:
+                locator.first.scroll_into_view_if_needed(timeout=5000)
+                if checked:
+                    locator.first.check(timeout=5000)
+                else:
+                    locator.first.uncheck(timeout=5000)
+                return
+        except Exception:
+            pass
+
+        # JS 兜底：找文本包含 text 的最近 checkbox
+        js_code = f"""
+        () => {{
+            const text = {repr(text)};
+            const all = Array.from(document.querySelectorAll('*'));
+            const el = all.find(e => Array.from(e.childNodes).some(n => n.nodeType === 3 && n.textContent.trim().includes(text)));
+            if (!el) return {{error: 'text not found: ' + text}};
+            let cb = el.querySelector('input[type="checkbox"]');
+            if (!cb) {{
+                let container = el.parentElement;
+                for (let i = 0; i < 8; i++) {{
+                    cb = container.querySelector('input[type="checkbox"]');
+                    if (cb) break;
+                    container = container.parentElement;
+                    if (!container) break;
+                }}
+            }}
+            if (!cb) return {{error: 'checkbox not found for: ' + text}};
+            cb.scrollIntoView({{block: 'center'}});
+            cb.checked = {str(checked).lower()};
+            ['change', 'click'].forEach(e => cb.dispatchEvent(new Event(e, {{bubbles: true}})));
+            return {{ok: true}};
+        }}
+        """
+        result = self._page.evaluate(js_code)
+        if isinstance(result, dict) and result.get("ok"):
+            return
+        raise WebBridgeError(result.get("error") or f"设置 {text} 失败")
+
+    def _is_text_visible(self, text: str) -> bool:
+        """判断页面上是否存在指定文字。"""
+        try:
+            return self._page.evaluate(
+                f"() => document.body.innerText.includes({repr(text)})"
+            )
+        except Exception:
+            return False
+
+    def _wait_for_text(self, text: str, timeout: int = 10) -> None:
+        """等待页面上出现指定文字。"""
+        start = time.time()
+        while time.time() - start < timeout:
+            if self._is_text_visible(text):
+                return
+            time.sleep(0.3)
+        raise WebBridgeError(f"等待文字出现超时: {text}")
+
+    def _click_sidebar(self, text: str) -> None:
+        """点击侧边栏菜单项，优先滚动到可见区域再点。"""
+        try:
+            # 侧边栏通常是 aside / nav / menu 里的文字
+            locator = self._page.locator("aside, nav, [class*='menu'], [class*='sidebar']").get_by_text(text, exact=False)
+            if locator.count() > 0:
+                locator.first.scroll_into_view_if_needed(timeout=5000)
+                locator.first.click(timeout=10000)
+                return
+        except Exception:
+            pass
+        # 兜底用通用文本点击
+        self._click_text(text)
+
+    def _ensure_parameter_page(self, timeout: int = 30) -> None:
+        """确保当前已经在训练参数页，否则点击侧边栏训练参数并等待。"""
+        start = time.time()
+        while time.time() - start < timeout:
+            try:
+                url_ok = "parameter_edit" in self._page.url
+                has_batch = self._page.locator("text=批量大小").count() > 0
+                if url_ok and has_batch:
+                    return
+            except Exception:
+                pass
+            # 还没到参数页，尝试点击训练参数
+            try:
+                self._click_sidebar("训练参数")
             except WebBridgeError:
-                continue
+                pass
+            time.sleep(1.0)
+        raise WebBridgeError("未能进入训练参数页")
+
+    def _check_augmentation_option(self, option: str, checked: bool = True) -> None:
+        """
+        在数据增强弹窗中勾选/取消某个增强策略。
+        兼容 Element UI 的自定义 checkbox（小正方形）以及原生 checkbox。
+        """
+        self._wait_for_text(option, timeout=10)
+
+        js_code = f"""
+        (args) => {{
+            const text = args[0];
+            const wantChecked = args[1];
+            const all = Array.from(document.querySelectorAll('*'));
+            const labelEl = all.find(el => Array.from(el.childNodes).some(n => n.nodeType === 3 && n.textContent.trim().includes(text)));
+            if (!labelEl) return {{error: 'text not found: ' + text}};
+
+            // 1. 优先找 Element UI 风格的 el-checkbox
+            let cb = labelEl.closest('.el-checkbox');
+            if (!cb) {{
+                let container = labelEl.parentElement;
+                for (let i = 0; i < 8; i++) {{
+                    const found = container.querySelector('.el-checkbox');
+                    if (found) {{ cb = found; break; }}
+                    container = container.parentElement;
+                    if (!container) break;
+                }}
+            }}
+            if (cb) {{
+                cb.scrollIntoView({{block: 'center'}});
+                const isChecked = cb.classList.contains('is-checked') ||
+                                  (cb.querySelector('input[type="checkbox"]') && cb.querySelector('input[type="checkbox"]').checked);
+                if (Boolean(isChecked) !== Boolean(wantChecked)) {{
+                    const target = cb.querySelector('.el-checkbox__inner') || cb.querySelector('input[type="checkbox"]') || cb;
+                    target.click();
+                }}
+                return {{ok: true, type: 'el-checkbox'}};
+            }}
+
+            // 2. 兜底：原生 checkbox
+            let input = labelEl.querySelector('input[type="checkbox"]');
+            if (!input) {{
+                let container = labelEl.parentElement;
+                for (let i = 0; i < 8; i++) {{
+                    input = container.querySelector('input[type="checkbox"]');
+                    if (input) break;
+                    container = container.parentElement;
+                    if (!container) break;
+                }}
+            }}
+            if (!input) return {{error: 'checkbox not found for: ' + text}};
+            input.scrollIntoView({{block: 'center'}});
+            if (input.checked !== wantChecked) {{
+                input.click();
+                ['change', 'click'].forEach(e => input.dispatchEvent(new Event(e, {{bubbles: true}})));
+            }}
+            return {{ok: true, type: 'native'}};
+        }}
+        """
+        result = self._page.evaluate(js_code, [option, checked])
+        if isinstance(result, dict) and result.get("ok"):
+            return
+        raise WebBridgeError(result.get("error") or f"勾选 {option} 失败")
+
+    def _normalize_augmentation_name(self, raw: str) -> Optional[str]:
+        """把用户/LLM 返回的增强名归一化为标准选项。"""
+        text = str(raw).strip().replace("随即", "随机")
+        for option in self.DATA_AUGMENTATION_OPTIONS:
+            if option.lower() in text.lower() or text.lower() in option.lower():
+                return option
+        return None
 
     # ------------------------------------------------------------------
     # 自然语言提示解析（execute_task 兼容用）

@@ -113,12 +113,19 @@ class LLMClient:
             '  "task_type": "分类/目标检测/OCR/实例分割/语义分割/旋转框检测/DETR 之一",\n'
             '  "categories": ["类别1", "类别2"],\n'
             '  "dataset_hint": "用户提到的数据集文件夹名，没有则为空字符串",\n'
-            '  "mode": "train"\n'
+            '  "mode": "train",\n'
+            '  "data_analysis": true,\n'
+            '  "data_augmentation": []\n'
             "}\n"
             "注意：\n"
             "1. categories 只返回用户明确想区分的类别，不要臆造。\n"
             "2. 如果用户用 cls、det、OCR、iseg、sseg、rotate、detr 等简写，正确映射为中文任务类型。\n"
-            "3. 只返回 JSON，不要附加说明。"
+            "3. data_analysis 表示是否需要在训练前执行数据分析（加载数据集、加载尺寸分布），默认 true。\n"
+            "4. data_augmentation 是数据增强选项列表，可选："
+            "调整图像大小、随机比例缩放、随机翻转、随机固定角度旋转、随机裁剪、"
+            "随机调整亮度、随机调整对比度、随机JPG编码。"
+            "如果用户没有明确提到需要数据增强，返回空列表。\n"
+            "5. 只返回 JSON，不要附加说明。"
         )
         content = self.chat(
             [

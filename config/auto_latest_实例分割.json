@@ -7,12 +7,12 @@
     "backend_ready_interval": 2.0
   },
   "project": {
-    "name": "5-ISEG-20260629_143227",
+    "name": "5-ISEG-20260701_164634",
     "task_type": "实例分割",
     "description": "自动化实例分割训练项目",
     "dataset_dir": "C:\\Users\\Admin\\kimi_gui_automation\\AI训练平台测试\\5-ISEG\\1-训练集",
     "work_dir": "C:\\Users\\Admin\\kimi_gui_automation\\AI训练平台测试\\5-ISEG\\work",
-    "dva_file": "C:\\Users\\Admin\\kimi_gui_automation\\AI训练平台测试\\5-ISEG\\5-ISEG-20260629_143227.dva"
+    "dva_file": "C:\\Users\\Admin\\kimi_gui_automation\\AI训练平台测试\\5-ISEG\\5-ISEG-20260701_164634.dva"
   },
   "training": {
     "auto_start": true,

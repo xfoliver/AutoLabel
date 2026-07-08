@@ -7,12 +7,12 @@
     "backend_ready_interval": 2.0
   },
   "project": {
-    "name": "4-DETR-作弊行为-20260629_141841",
+    "name": "4-DETR-20260701_162042",
     "task_type": "目标检测",
     "description": "自动化 DETR 训练项目",
     "dataset_dir": "C:\\Users\\Admin\\kimi_gui_automation\\AI训练平台测试\\4-DETR\\训练",
     "work_dir": "C:\\Users\\Admin\\kimi_gui_automation\\AI训练平台测试\\4-DETR\\work",
-    "dva_file": "C:\\Users\\Admin\\kimi_gui_automation\\AI训练平台测试\\4-DETR\\4-DETR-作弊行为-20260629_141841.dva"
+    "dva_file": "C:\\Users\\Admin\\kimi_gui_automation\\AI训练平台测试\\4-DETR\\4-DETR-20260701_162042.dva"
   },
   "training": {
     "auto_start": true,
@@ -59,9 +59,7 @@
     "resolved_categories": [
       "作弊"
     ],
-    "matched_user_categories": {
-      "作弊行为": "作弊"
-    }
+    "matched_user_categories": {}
   },
   "webbridge": {
     "enabled": true,

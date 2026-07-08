@@ -7,12 +7,12 @@
     "backend_ready_interval": 2.0
   },
   "project": {
-    "name": "6-SSEG-20260629_144600",
+    "name": "6-SSEG-20260701_170132",
     "task_type": "语义分割",
     "description": "自动化语义分割训练项目",
     "dataset_dir": "C:\\Users\\Admin\\kimi_gui_automation\\AI训练平台测试\\6-SSEG\\训练集",
     "work_dir": "C:\\Users\\Admin\\kimi_gui_automation\\AI训练平台测试\\6-SSEG\\work",
-    "dva_file": "C:\\Users\\Admin\\kimi_gui_automation\\AI训练平台测试\\6-SSEG\\6-SSEG-20260629_144600.dva"
+    "dva_file": "C:\\Users\\Admin\\kimi_gui_automation\\AI训练平台测试\\6-SSEG\\6-SSEG-20260701_170132.dva"
   },
   "training": {
     "auto_start": true,

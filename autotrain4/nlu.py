@@ -14,6 +14,18 @@ from .llm_client import LLMClient
 
 logger = logging.getLogger(__name__)
 
+# 数据增强 UI 选项（用于归一化 LLM 输出，允许“随即”/“随机”混用）
+DATA_AUGMENTATION_OPTIONS = [
+    "调整图像大小",
+    "随机比例缩放",
+    "随机翻转",
+    "随机固定角度旋转",
+    "随机裁剪",
+    "随机调整亮度",
+    "随机调整对比度",
+    "随机JPG编码",
+]
+
 
 @dataclass
 class TrainIntent:
@@ -24,6 +36,8 @@ class TrainIntent:
     dataset_hint: str = ""
     mode: str = "train"  # train / dry_run / evaluate / test
     raw_prompt: str = ""
+    data_analysis: bool = True
+    data_augmentation: List[str] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -32,6 +46,8 @@ class TrainIntent:
             "dataset_hint": self.dataset_hint,
             "mode": self.mode,
             "raw_prompt": self.raw_prompt,
+            "data_analysis": self.data_analysis,
+            "data_augmentation": self.data_augmentation,
         }
 
 
@@ -65,6 +81,10 @@ class IntentParser:
         mode = self._canonicalize_mode(parsed.get("mode", "train"), prompt)
         categories = self._canonicalize_categories(parsed.get("categories", []))
         dataset_hint = str(parsed.get("dataset_hint", "")).strip()
+        data_analysis = bool(parsed.get("data_analysis", True))
+        data_augmentation = self._canonicalize_data_augmentation(
+            parsed.get("data_augmentation", [])
+        )
 
         if not task_type:
             # 测试类指令可能只含"刚刚训练的模型"而不含任务类型，允许为空，由下游推断
@@ -81,6 +101,8 @@ class IntentParser:
             dataset_hint=dataset_hint,
             mode=mode,
             raw_prompt=prompt,
+            data_analysis=data_analysis,
+            data_augmentation=data_augmentation,
         )
 
     def _canonicalize_task_type(self, raw: str) -> str:
@@ -127,4 +149,25 @@ class IntentParser:
             if key not in seen:
                 seen.add(key)
                 result.append(cat)
+        return result
+
+    @staticmethod
+    def _canonicalize_data_augmentation(raw: Any) -> List[str]:
+        """把 LLM 返回的增强选项归一化为标准 UI 文本。"""
+        if not raw:
+            return []
+        if isinstance(raw, str):
+            raw = [raw]
+
+        result: List[str] = []
+        for item in raw:
+            text = str(item).strip().replace("随即", "随机")
+            if not text:
+                continue
+            # 找最匹配的标准选项（忽略大小写和全半角）
+            for option in DATA_AUGMENTATION_OPTIONS:
+                if option.lower() in text.lower() or text.lower() in option.lower():
+                    if option not in result:
+                        result.append(option)
+                    break
         return result

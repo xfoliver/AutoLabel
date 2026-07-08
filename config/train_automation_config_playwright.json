@@ -55,6 +55,9 @@
     "screenshot_dir": "./webbridge_screenshots",
     "headless": false,
     "browser": "chromium",
-    "slow_mo": 50
+    "slow_mo": 300,
+    "step_delay": 1.0,
+    "wait_loading_done": false,
+    "post_click_delay": 2.0
   }
 }

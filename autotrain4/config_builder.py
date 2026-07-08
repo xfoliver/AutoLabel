@@ -14,7 +14,8 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from .common import DEFAULT_WEBBRIDGE, TASK_TEMPLATES
-from .nlu import TrainIntent
+from .llm_client import LLMClient
+from .nlu import DATA_AUGMENTATION_OPTIONS, TrainIntent
 from .resolver import DatasetMatch
 
 logger = logging.getLogger(__name__)
@@ -31,6 +32,7 @@ class ConfigBuilder:
         adapter: Optional[str] = None,
         full_train: bool = False,
         adjustments: Optional[Dict[str, Any]] = None,
+        llm_client: Optional[LLMClient] = None,
     ):
         self.intent = intent
         self.match = match
@@ -38,6 +40,7 @@ class ConfigBuilder:
         self.adapter = adapter
         self.full_train = full_train
         self.adjustments = adjustments or {}
+        self.llm = llm_client
 
     def build(self) -> Dict[str, Any]:
         """生成完整配置。"""
@@ -76,6 +79,11 @@ class ConfigBuilder:
             dataset_cfg["resolved_categories"] = self.match.categories
             dataset_cfg["matched_user_categories"] = self.match.matched_user_categories
 
+        # ui_flow 区块：把数据分析和数据增强的决策固化到配置里
+        ui_flow = cfg.setdefault("ui_flow", {})
+        ui_flow.setdefault("data_analysis", self.intent.data_analysis)
+        ui_flow.setdefault("data_augmentation", self.intent.data_augmentation)
+
         # training 区块：根据数据量做轻量调整
         training = cfg.setdefault("training", {})
         self._tune_hyperparameters(training)
@@ -85,6 +93,9 @@ class ConfigBuilder:
             hp = training.setdefault("hyperparameters", {})
             hp["train_set_val"] = 100
             logger.info("启用全量训练模式: train_set_val=100")
+
+        # LLM 顾问：根据用户意图推荐超参和数据增强方案
+        self._apply_llm_advice(cfg)
 
         # 应用 DeepSeek 判断层给出的修正建议
         if self.adjustments:
@@ -102,6 +113,94 @@ class ConfigBuilder:
                 result[key] = ConfigBuilder._deep_merge(result[key], value)
             else:
                 result[key] = value
+        return result
+
+    def _apply_llm_advice(self, cfg: Dict[str, Any]) -> None:
+        """调用 LLM 顾问推荐超参和数据增强方案并合并到配置中。"""
+        if not self.llm or not self.llm.available:
+            return
+
+        import json as _json
+
+        training = cfg.setdefault("training", {})
+        base_hp = training.get("hyperparameters", {})
+        ui_flow = cfg.setdefault("ui_flow", {})
+
+        system_msg = (
+            "你是 DLCV AI 训练平台的资深训练工程师。请根据用户意图、数据集信息和当前默认超参，"
+            "推荐最合适的训练超参数和数据增强方案。\n"
+            "返回 JSON 格式：\n"
+            "{\n"
+            '  "hyperparameters": {"max_epochs": 12, "batch_size": 8, "lr": 0.001, ...},\n'
+            '  "data_augmentation": ["随机翻转", "随机裁剪"],\n'
+            '  "reasoning": "简要说明"\n'
+            "}\n"
+            "注意：\n"
+            "1. hyperparameters 只返回需要调整的关键字段，不需要的字段不出现。\n"
+            "2. data_augmentation 可选：调整图像大小、随机比例缩放、随机翻转、随机固定角度旋转、"
+            "随机裁剪、随机调整亮度、随机调整对比度、随机JPG编码。\n"
+            "3. 如果用户没有明确提到且任务不需要，data_augmentation 返回空列表。\n"
+            "4. 只返回 JSON，不要附加说明。"
+        )
+        user_msg = (
+            f"用户原始输入：{self.intent.raw_prompt}\n"
+            f"解析意图：{_json.dumps(self.intent.to_dict(), ensure_ascii=False)}\n"
+            f"数据集信息：{_json.dumps(self.match.to_dict(), ensure_ascii=False)}\n"
+            f"当前默认超参：{_json.dumps(base_hp, ensure_ascii=False)}"
+        )
+
+        try:
+            content = self.llm.chat(
+                [
+                    {"role": "system", "content": system_msg},
+                    {"role": "user", "content": user_msg},
+                ]
+            )
+        except Exception as e:
+            logger.warning("LLM 训练顾问调用失败: %s", e)
+            return
+
+        if not content:
+            return
+
+        parsed = self.llm._safe_parse_json(content)
+        if not parsed:
+            logger.warning("LLM 训练顾问返回无法解析: %s", content[:200])
+            return
+
+        recommended_hp = parsed.get("hyperparameters") or {}
+        recommended_aug = parsed.get("data_augmentation", [])
+        reasoning = str(parsed.get("reasoning", ""))
+
+        if recommended_hp:
+            hp = training.setdefault("hyperparameters", {})
+            for key, value in recommended_hp.items():
+                hp[key] = value
+            logger.info("LLM 顾问推荐超参: %s", recommended_hp)
+
+        if recommended_aug:
+            normalized = self._normalize_augmentation_options(recommended_aug)
+            if normalized:
+                ui_flow["data_augmentation"] = normalized
+                logger.info("LLM 顾问推荐数据增强: %s (%s)", normalized, reasoning)
+
+    @staticmethod
+    def _normalize_augmentation_options(raw: Any) -> list:
+        """归一化 LLM 返回的增强选项。"""
+        if not raw:
+            return []
+        if isinstance(raw, str):
+            raw = [raw]
+        result: List[str] = []
+        for item in raw:
+            text = str(item).strip().replace("随即", "随机")
+            if not text:
+                continue
+            for option in DATA_AUGMENTATION_OPTIONS:
+                if option.lower() in text.lower() or text.lower() in option.lower():
+                    if option not in result:
+                        result.append(option)
+                    break
         return result
 
     def save(self, config_path: Optional[Path] = None) -> Path:

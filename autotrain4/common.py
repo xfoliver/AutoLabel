@@ -80,7 +80,11 @@ DEFAULT_WEBBRIDGE = {
     "screenshot_dir": "./webbridge_screenshots",
     "headless": False,
     "browser": "chromium",
-    "slow_mo": 50,
+    "slow_mo": 300,
+    "step_delay": 1.0,
+    "wait_loading_done": False,
+    "post_click_delay": 2.0,
+    "keep_browser_open": True,
 }
 
 # 图片扩展名，用于数据集类别自动检测

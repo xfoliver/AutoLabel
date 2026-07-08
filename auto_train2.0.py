@@ -78,6 +78,7 @@ class DLCVAutoTrainer:
         force_new: bool = False,
         dry_run: bool = False,
         reuse: bool = False,
+        keep_browser_open: bool = True,
     ):
         self.config_path = Path(config_path).resolve()
         self.config: Dict[str, Any] = {}
@@ -85,6 +86,7 @@ class DLCVAutoTrainer:
         self.force_new = force_new
         self.dry_run = dry_run
         self.reuse = reuse
+        self.keep_browser_open = keep_browser_open
         self.backend_url: str = "http://127.0.0.1:9887"
         self.frontend_url: str = "http://localhost:8842"
         self.project_id: Optional[str] = None
@@ -875,49 +877,77 @@ class DLCVAutoTrainer:
             logger.info("webbridge.enabled=false，跳过 WebBridge 自动化")
             return
 
+        project_url = f"{self.frontend_url}/#/proj_panel/{self.project_id}"
         param_url = f"{self.frontend_url}/#/proj_panel/{self.project_id}/parameter_edit"
         hp = self.config["training"].get("hyperparameters", {})
         task_prompt = self._build_training_task_prompt(hp)
+        ui_flow = self.config.get("ui_flow", {})
         monitor = self.config["training"].get("monitor_until_complete", True)
 
+        bridge = None
+        # 配置文件优先级高于命令行：若配置中已设置 keep_browser_open 则使用配置值
+        keep_open = wb_cfg.get("keep_browser_open", self.keep_browser_open)
         try:
-            with create_webbridge(wb_cfg) as bridge:
-                logger.info("连接 Kimi WebBridge (adapter=%s)", wb_cfg.get("adapter", "playwright"))
+            bridge = create_webbridge(wb_cfg)
+            bridge.connect()
+            logger.info("连接 Kimi WebBridge (adapter=%s)", wb_cfg.get("adapter", "playwright"))
 
-                logger.info("导航至训练参数页: %s", param_url)
-                bridge.navigate(param_url)
-                bridge.screenshot("parameter_edit_before")
+            # 如果 Playwright 适配器支持新流程，从项目信息页按菜单一步步走
+            if hasattr(bridge, "run_training_workflow"):
+                logger.info("导航至项目信息页: %s", project_url)
+                bridge.navigate(project_url)
+                bridge.screenshot("project_info")
 
                 # 记录点击「开始训练」前的最新 training_id，便于之后识别本次新建的 session
                 previous_id = self.discover_training_id(self.project_id)
                 logger.info("点击开始训练前最新 training_id: %s", previous_id or "无")
 
-                logger.info("发送训练任务给 Kimi Agent...")
+                result = bridge.run_training_workflow(ui_flow, hp)
+            else:
+                # 兜底：旧版直接跳转到参数页
+                logger.info("导航至训练参数页: %s", param_url)
+                bridge.navigate(param_url)
+                bridge.screenshot("parameter_edit_before")
+
+                previous_id = self.discover_training_id(self.project_id)
+                logger.info("点击开始训练前最新 training_id: %s", previous_id or "无")
+
                 if hasattr(bridge, "apply_hyperparameters"):
                     result = bridge.apply_hyperparameters(hp)
                 else:
                     result = bridge.execute_task(task_prompt)
-                if not result.success:
-                    raise AutoTrainError(f"WebBridge 任务执行失败: {result.message}")
 
-                logger.info("WebBridge 任务执行结果: %s", result.message)
-                bridge.screenshot("training_started")
+            if not result.success:
+                raise AutoTrainError(f"WebBridge 任务执行失败: {result.message}")
 
-                # 等待并识别本次新创建的 training_id
-                self.training_id = self._wait_for_new_training_id(previous_id, timeout=60)
-                if not self.training_id:
-                    logger.warning("未能在 60s 内发现新的 training_id，尝试兜底查询")
-                    self.training_id = self.discover_training_id(self.project_id)
+            logger.info("WebBridge 任务执行结果: %s", result.message)
+            bridge.screenshot("training_started")
 
-                if not self.training_id:
-                    logger.warning("WebBridge 未返回 training_id，尝试使用后端 API 兜底启动训练")
-                    self.start_training_api()
+            # 等待并识别本次新创建的 training_id
+            self.training_id = self._wait_for_new_training_id(previous_id, timeout=60)
+            if not self.training_id:
+                logger.warning("未能在 60s 内发现新的 training_id，尝试兜底查询")
+                self.training_id = self.discover_training_id(self.project_id)
 
-                if monitor:
-                    self.monitor_training()
+            if not self.training_id:
+                logger.warning("WebBridge 未返回 training_id，尝试使用后端 API 兜底启动训练")
+                self.start_training_api()
+
+            if monitor:
+                self.monitor_training()
+
+            if keep_open:
+                logger.info("训练已完成，浏览器窗口将保持打开，按 Enter 关闭...")
+                try:
+                    input("训练已完成，按 Enter 关闭浏览器窗口...")
+                except (EOFError, KeyboardInterrupt):
+                    pass
         except WebBridgeError as e:
             logger.error("Kimi WebBridge 调用失败: %s", e)
             raise AutoTrainError(f"WebBridge 调用失败: {e}")
+        finally:
+            if bridge is not None:
+                bridge.close()
 
     # ------------------------------------------------------------------
     # 主流程
@@ -1013,6 +1043,12 @@ def main() -> int:
     parser.add_argument("--force-new", action="store_true", help="强制创建新项目")
     parser.add_argument("--dry-run", action="store_true", help="仅生成 .dva，不启动平台")
     parser.add_argument("--keep-alive", action="store_true", help="训练结束后保持平台运行")
+    parser.add_argument(
+        "--keep-browser-open",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="训练结束后保持浏览器窗口打开，按 Enter 关闭（默认开启）",
+    )
     parser.add_argument("--reuse", action="store_true", help="复用已运行的平台/后端实例")
     args = parser.parse_args()
 
@@ -1021,6 +1057,7 @@ def main() -> int:
         force_new=args.force_new,
         dry_run=args.dry_run,
         reuse=args.reuse,
+        keep_browser_open=args.keep_browser_open,
     )
     try:
         trainer.run()
