@@ -73,6 +73,15 @@ class PlaywrightWebBridgeAdapter(BaseWebBridge):
         "随机JPG编码",
     ]
 
+    @staticmethod
+    def _parse_bool(value: Any) -> bool:
+        """统一解析配置中的布尔值，兼容字符串 'True'/'False'。"""
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            return value.strip().lower() in ("true", "1", "yes", "on")
+        return bool(value)
+
     def __init__(self, config: Dict[str, Any]):
         super().__init__(config)
         self.browser_type = config.get("browser", "chromium").lower()
@@ -84,11 +93,16 @@ class PlaywrightWebBridgeAdapter(BaseWebBridge):
         self.launch_args = config.get("launch_args", ["--disable-blink-features=AutomationControlled"])
         self.video_dir = config.get("video_dir")
         self.video_size = config.get("video_size", {"width": 1280, "height": 720})
+        self.record_frontend = self._parse_bool(config.get("record_frontend", True))
+        self.record_dir = config.get("record_dir", "./record")
+        self.record_name = config.get("record_name")
+        self.record_size = config.get("record_size", {"width": 1280, "height": 720})
         Path(self.screenshot_dir).mkdir(parents=True, exist_ok=True)
         self._playwright = None
         self._browser = None
         self._context = None
         self._page: Optional[Page] = None
+        self._record_saved_path: Optional[str] = None
 
     # ------------------------------------------------------------------
     # BaseWebBridge 接口
@@ -113,6 +127,13 @@ class PlaywrightWebBridgeAdapter(BaseWebBridge):
                 context_options["record_video_dir"] = str(video_dir)
                 context_options["record_video_size"] = self.video_size
 
+            if self.record_frontend:
+                record_dir = Path(self.record_dir).resolve()
+                record_dir.mkdir(parents=True, exist_ok=True)
+                context_options["record_video_dir"] = str(record_dir)
+                context_options["record_video_size"] = self.record_size
+                print(f"[PlaywrightWebBridge] 前端录屏已启用，保存目录: {record_dir}")
+
             self._context = self._browser.new_context(**context_options)
             self.session_id = f"playwright-{int(time.time())}"
         except Exception as e:
@@ -131,6 +152,15 @@ class PlaywrightWebBridgeAdapter(BaseWebBridge):
             raise WebBridgeError(f"页面加载超时: {e}")
         except Exception as e:
             raise WebBridgeError(f"导航失败: {e}")
+
+    def get_current_url(self) -> str:
+        """返回当前页面 URL；若页面未打开则返回空字符串。"""
+        try:
+            if self._page and not self._page.is_closed():
+                return self._page.url
+        except Exception:
+            pass
+        return ""
 
     def execute_task(self, task_description: str) -> WebBridgeResult:
         """兼容接口：将自然语言描述解析为超参后应用。"""
@@ -180,19 +210,17 @@ class PlaywrightWebBridgeAdapter(BaseWebBridge):
             raise WebBridgeError(f"获取页面状态失败: {e}")
 
     def close(self) -> None:
+        video_path = None
         try:
             if self._page:
-                video_path = None
                 try:
                     video = self._page.video
                     if video:
                         video_path = video.path()
-                except Exception:
-                    pass
+                except Exception as e:
+                    print(f"[PlaywrightWebBridge] 获取 video path 失败: {e}")
                 self._page.close()
                 self._page = None
-                if video_path:
-                    print(f"[PlaywrightWebBridge] 页面录制视频: {video_path}")
             if self._context:
                 self._context.close()
                 self._context = None
@@ -204,7 +232,53 @@ class PlaywrightWebBridgeAdapter(BaseWebBridge):
                 self._playwright = None
         except Exception as e:
             print(f"关闭 Playwright 时出错: {e}")
+
+        # 必须在 context / browser / playwright 全部关闭后重命名，
+        # 否则 Windows 上 Playwright 仍持有视频文件句柄，会导致 WinError 32。
+        print(f"[PlaywrightWebBridge] close() record_frontend={self.record_frontend}, video_path={video_path}")
+        if video_path and self.record_frontend:
+            self._save_recording(video_path)
+        elif video_path:
+            print(f"[PlaywrightWebBridge] 页面录制视频: {video_path}")
+
         self.session_id = None
+
+    def _save_recording(self, video_path: str) -> Optional[str]:
+        """将 Playwright 自动命名的录屏文件重命名为 模型+训练结束时间 并保存到 record 目录。"""
+        if not self.record_dir:
+            return None
+        try:
+            import shutil
+
+            src = Path(video_path)
+            # Playwright 视频在 context 关闭后通常立即可用，但在 Windows 上偶尔需要多等一会儿
+            for _ in range(50):
+                if src.exists() and src.stat().st_size > 0:
+                    break
+                time.sleep(0.1)
+            if not src.exists():
+                return None
+
+            timestamp = time.strftime("%Y%m%d_%H%M%S")
+            name = self.record_name or "autotrain"
+            safe_name = re.sub(r'[\\/:*?"<>|]+', "_", str(name)).strip() or "autotrain"
+            filename = f"{safe_name}_{timestamp}.webm"
+            target = Path(self.record_dir).resolve() / filename
+            target.parent.mkdir(parents=True, exist_ok=True)
+
+            try:
+                src.rename(target)
+            except OSError:
+                # Windows 文件仍被占用时使用复制+删除兜底
+                shutil.copy2(str(src), str(target))
+                src.unlink()
+
+            self._record_saved_path = str(target)
+            print(f"[PlaywrightWebBridge] 前端录屏已保存: {target}")
+            return self._record_saved_path
+        except Exception as e:
+            print(f"[PlaywrightWebBridge] 保存录屏失败: {e}")
+            return None
 
     # ------------------------------------------------------------------
     # 完整训练流程：数据分析 → 数据增强 → 训练参数 → 开始训练

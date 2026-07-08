@@ -79,6 +79,7 @@ class DLCVAutoTrainer:
         dry_run: bool = False,
         reuse: bool = False,
         keep_browser_open: bool = True,
+        record_frontend: bool = True,
     ):
         self.config_path = Path(config_path).resolve()
         self.config: Dict[str, Any] = {}
@@ -87,6 +88,7 @@ class DLCVAutoTrainer:
         self.dry_run = dry_run
         self.reuse = reuse
         self.keep_browser_open = keep_browser_open
+        self.record_frontend = record_frontend
         self.backend_url: str = "http://127.0.0.1:9887"
         self.frontend_url: str = "http://localhost:8842"
         self.project_id: Optional[str] = None
@@ -885,8 +887,16 @@ class DLCVAutoTrainer:
         monitor = self.config["training"].get("monitor_until_complete", True)
 
         bridge = None
-        # 配置文件优先级高于命令行：若配置中已设置 keep_browser_open 则使用配置值
+        # 配置文件优先级高于命令行：若配置中已设置 keep_browser_open / record_frontend 则使用配置值
         keep_open = wb_cfg.get("keep_browser_open", self.keep_browser_open)
+        _rf = wb_cfg.get("record_frontend", self.record_frontend)
+        wb_cfg["record_frontend"] = _rf if isinstance(_rf, bool) else str(_rf).strip().lower() in ("true", "1", "yes", "on")
+        project_cfg = self.config.get("project", {})
+        wb_cfg["record_name"] = wb_cfg.get(
+            "record_name",
+            project_cfg.get("name") or project_cfg.get("task_type") or "autotrain",
+        )
+
         try:
             bridge = create_webbridge(wb_cfg)
             bridge.connect()
@@ -1049,6 +1059,12 @@ def main() -> int:
         default=True,
         help="训练结束后保持浏览器窗口打开，按 Enter 关闭（默认开启）",
     )
+    parser.add_argument(
+        "--record",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="录制前端自动化流程并保存到 record 目录（默认开启）",
+    )
     parser.add_argument("--reuse", action="store_true", help="复用已运行的平台/后端实例")
     args = parser.parse_args()
 
@@ -1058,6 +1074,7 @@ def main() -> int:
         dry_run=args.dry_run,
         reuse=args.reuse,
         keep_browser_open=args.keep_browser_open,
+        record_frontend=args.record,
     )
     try:
         trainer.run()

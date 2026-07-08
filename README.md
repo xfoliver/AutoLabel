@@ -13,9 +13,31 @@ AutoTrain 4.0 是 DLCV AI 训练平台的**自然语言入口**。你只需用�
 - **保留 WebBridge 可视化**：不改动 2.0 执行引擎，前端点击流程（数据分析 → 数据增强 → 训练参数 → 开始训练）完全保留。
 - **数据增强自然语言配置**：在 `--prompt` 中直接说明需要哪些增强，Agent 自动在前端勾选、保存并处理确认弹窗。
 - **训练完成保持页面**：默认训练结束后浏览器窗口停留在训练完成页，按 Enter 才关闭。
+- **前端录屏**：默认录制完整前端自动化流程，保存为 `record/<项目名>_<训练结束时间>.webm`。
 - **一键测试最新模型**：无需手动找模型路径和测试集，自动复用最近一次训练的配置。
 - **自动推理对比**：可与基准模型（baseline）对比同一张测试集，统计结果一致率。
 - **可读的概率格式**：report 中的 score/probability 使用普通小数（如 `0.99470669`），不使用科学计数法。
+
+---
+
+## 架构概览
+
+AutoTrain 4.0 采用三层 LLM 决策链路：
+
+1. **第一层：意图解析（`autotrain4/nlu.py`）**
+   - 解析任务类型、目标类别、数据集提示、数据增强需求、是否执行数据分析等。
+   - 通过关键词识别测试/评估意图。
+
+2. **第二层：数据集匹配（`autotrain4/resolver.py`）**
+   - 按任务类型过滤候选文件夹。
+   - 调用 LLM 在候选数据集中选择最匹配的一项。
+   - 调用 LLM 对齐用户类别与数据集类别，计算匹配置信度。
+
+3. **第三层：需求判断（`autotrain4/judge.py`）**
+   - 调用 DeepSeek 评审需求可行性、数据集匹配度。
+   - 输出最终是否继续执行的决策和配置修正建议。
+
+之后由 `autotrain4/config_builder.py` 生成配置，`auto_train2.0.py` 驱动 WebBridge 完成前端自动化训练。训练完成后可选执行推理对比（`autotrain4/inference_client.py` + `autotrain4/evaluator.py`）。
 
 ---
 
@@ -24,6 +46,16 @@ AutoTrain 4.0 是 DLCV AI 训练平台的**自然语言入口**。你只需用�
 AutoTrain 4.0 的意图解析、数据集匹配、需求判断均依赖 LLM，**必须配置可用的 LLM API**。
 
 默认直接接入 DeepSeek（已内置默认 key，也可通过环境变量覆盖），或任意 OpenAI 兼容接口。
+
+**依赖安装：**
+
+```bash
+pip install openai requests tqdm
+```
+
+- `openai`：调用 LLM（DeepSeek / OpenAI 兼容接口）。
+- `requests`、`tqdm`：推理评估模块使用。
+- `playwright`：前端自动化需要，由 `auto_train2.0.py` 所在环境提供。
 
 ---
 
@@ -47,13 +79,23 @@ python auto_train4.0.py --prompt "训练一个 cls 模型来辨别王不留行�
 python auto_train4.0.py --prompt "训练一个 cls 模型来辨别王不留行和白芷" --dry-run
 ```
 
-### 4. 手动指定文件夹（跳过语义匹配）
+dry-run 模式下，Agent 会生成 `.dva` 项目文件并尝试启动平台，但不会真正开始训练，适合验证配置生成是否正确。
+
+### 4. 禁用数据分析
+
+如果不需要前端「数据分析」步骤（跳过加载数据集/尺寸分布）：
+
+```bash
+python auto_train4.0.py --prompt "训练一个分类模型识别王不留行和白芷，不做数据分析"
+```
+
+### 5. 手动指定文件夹（跳过语义匹配）
 
 ```bash
 python auto_train4.0.py --prompt "训练一个分类模型" --folder 2-CLS
 ```
 
-### 5. 指定数据增强
+### 6. 指定数据增强
 
 在提示中直接说明需要的数据增强，Agent 会自动勾选并保存：
 
@@ -72,7 +114,7 @@ python auto_train4.0.py --prompt "训练一个分类模型，使用随机翻转�
 - 随机调整对比度
 - 随机 JPG 编码
 
-### 6. 训练完成后自动关闭浏览器窗口
+### 7. 训练完成后自动关闭浏览器窗口
 
 默认训练完成后浏览器窗口保持打开。如需自动关闭：
 
@@ -80,7 +122,15 @@ python auto_train4.0.py --prompt "训练一个分类模型，使用随机翻转�
 python auto_train4.0.py --prompt "训练一个分类模型" --no-keep-browser-open
 ```
 
-### 7. 测试刚刚训练好的模型（训练集 = 测试集）
+### 8. 关闭前端录屏
+
+默认会录制完整前端自动化流程并保存到 `record/` 目录。如需关闭：
+
+```bash
+python auto_train4.0.py --prompt "训练一个分类模型" --no-record
+```
+
+### 9. 测试刚刚训练好的模型（训练集 = 测试集）
 
 ```bash
 # 方式一：用自然语言触发测试意图
@@ -100,7 +150,7 @@ python auto_train4.0.py --prompt "测试分类模型" --test-latest --latest-con
 3. 在 `work_dir` 里找最新的 `.dvp` 模型。
 4. 用训练集作为测试集，调用推理接口生成 `test_report_{模型名}.json`。
 
-### 8. 与基准模型对比
+### 10. 与基准模型对比
 
 ```bash
 python auto_train4.0.py --prompt "测试刚才训练的分类模型" --baseline-model "Baseline Models/CLS-baseline_20260630_154101.dvp"
@@ -122,15 +172,16 @@ python auto_train4.0.py --prompt "测试刚才训练的分类模型" --baseline-
 | `--scan-dir` | 数据集根目录，默认 `AI训练平台测试`。 |
 | `--folder` | 直接指定文件夹名，跳过语义匹配。 |
 | `--config-out` | 指定生成的配置文件路径。 |
-| `--adapter` | 覆盖 WebBridge adapter，当前仅支持 `playwright`。 |
+| `--adapter` | 覆盖 WebBridge adapter。代码保留 `playwright/skill/http/stub` 选项，但当前实现仅 `playwright` 可用。 |
 | `--auto-threshold` | 自动执行的匹配置信度阈值，默认 `0.55`。 |
 | `--generate-config-only` | 仅生成配置，不调用 `auto_train2.0.py`。 |
 | `--dry-run` | 传给 2.0：只生成 `.dva`，不启动平台。 |
 | `--force-new` | 传给 2.0：强制创建新项目。 |
 | `--keep-alive` | 传给 2.0：训练结束后保持平台运行（默认开启）。 |
 | `--keep-browser-open` | 传给 2.0：训练结束后保持浏览器窗口打开，按 Enter 关闭（默认开启）。 |
+| `--record` | 传给 2.0：录制前端自动化流程并保存到 `record` 目录（默认开启）。 |
 | `--reuse` | 传给 2.0：复用已运行的平台/后端实例（默认开启）。 |
-| `--full-train` | 训练集拉到 100%（`train_set_val=100, val_set_val=0`）。 |
+| `--full-train` | 训练集拉到 100%（`train_set_val=100`，验证集保持模板默认值）。 |
 | `--test-latest` | 跳过训练，直接测试最近一次训练生成的模型。 |
 | `--latest-config` | 配合 `--test-latest`，指定要回看的配置文件路径。 |
 | `--test-image-dir` | 训练完成后用于推理测试的图片目录（训练模式专用）。 |
@@ -150,7 +201,34 @@ python auto_train4.0.py --prompt "测试刚才训练的分类模型" --baseline-
 2. **数据增强**（可选）：点击侧边栏「数据增强」→ 打开增强策略弹窗 → 勾选用户指定的增强选项 → 关闭弹窗 → 点击页面右下角「保存」→ 处理二次确认弹窗。
 3. **训练参数**：点击侧边栏「训练参数」→ 展开所有参数面板 → 按配置设置超参 → 保存 → 开始训练 → 处理确认弹窗。
 4. **监控训练**：轮询后端训练状态，直到完成/失败/中止。
-5. **保持页面**：训练完成后浏览器窗口停留在当前页面，按 Enter 关闭。
+5. **保存录屏**：关闭浏览器窗口时，将前端录屏保存为 `record/<项目名>_<训练结束时间>.webm`。
+6. **保持页面**：训练完成后浏览器窗口停留在当前页面，按 Enter 关闭。
+
+---
+
+## 生成的配置文件
+
+AutoTrain 4.0 会根据任务类型选择模板（`config/{task}_train_automation_config.json`），生成最终配置并保存到 `config/auto_latest_{任务类型}.json`。配置主要包含以下区块：
+
+- `project`：项目名称、任务类型、数据集目录、工作目录、`.dva` 文件路径。
+  - 项目名称格式：`{文件夹名}-{类别1_类别2}-{时间戳}`，例如 `2-CLS-白芷_防己-20260708_130323`。
+- `platform`：DLCV 平台 exe 路径、前后端启动参数。
+- `webbridge`：前端自动化配置（adapter、headless、录屏、截图目录等）。
+- `dataset`：`auto_detect` 及 LLM 解析出的类别对齐信息。
+- `ui_flow`：是否执行数据分析、数据增强选项列表。
+- `training`：超参数、训练/验证集比例、随机种子、训练完成后的监控配置。
+
+你可以用 `--config-out` 指定生成路径，也可以用 `--generate-config-only` 只生成配置不启动训练。
+
+---
+
+## 训练监控
+
+`auto_train2.0.py` 在点击「开始训练」后会进入监控循环：
+
+- 轮询后端 API `GET /trainings/{training_id}` 获取训练状态。
+- 当状态为 `completed`、`failed`、`stopped` 或 `error` 时退出监控。
+- 训练完成后，若指定了 `--test-image-dir` 且未启用 `--skip-inference`，会执行推理评估。
 
 ---
 
@@ -192,6 +270,16 @@ python auto_train4.0.py --prompt "evaluate the latest cls model"
    - 否则用修改时间最新的 `auto_latest_*.json`。
 3. 从配置中读取 `project.work_dir`，取里面最新的 `.dvp` 模型。
 4. 从配置中读取 `project.dataset_dir`，作为测试图片目录。
+
+### 与基准模型一起测试
+
+`--test-latest` 可与 `--baseline-model` 同时使用：
+
+```bash
+python auto_train4.0.py --prompt "测试刚刚训练的分类模型" --test-latest --baseline-model "Baseline Models/CLS-baseline_20260630_154101.dvp"
+```
+
+这样会用训练集分别跑新模型和 baseline，生成结果对比报告。
 
 ### 推理服务要求
 
@@ -356,14 +444,20 @@ python auto_train4.0.py --prompt "训练一个目标检测模型" --folder 3-DET
 # 指定数据增强
 python auto_train4.0.py --prompt "训练一个分类模型，使用随机翻转和随机裁剪"
 
+# 全量训练（训练集拉到 100%，验证集保持模板默认）
+python auto_train4.0.py --prompt "训练一个分类模型识别王不留行和白芷" --full-train
+
 # 训练完立刻测试
 python auto_train4.0.py --prompt "训练一个 cls 模型来辨别王不留行和白芷" --test-image-dir "AI训练平台测试/2-CLS/训练集"
 
 # 只测试最新模型
 python auto_train4.0.py --prompt "测试刚刚训练的分类模型"
 
-# 测试并对比 baseline
+# 测试最新模型并对比 baseline
 python auto_train4.0.py --prompt "测试刚刚训练的分类模型" --baseline-model "Baseline Models/CLS-baseline_20260630_154101.dvp"
+
+# 用自然语言触发 dry-run
+python auto_train4.0.py --prompt "只生成一个分类模型的 dva 配置，不要开始训练"
 ```
 
 ---
@@ -376,3 +470,4 @@ python auto_train4.0.py --prompt "测试刚刚训练的分类模型" --baseline-
 - 4.0 会覆盖 `config/auto_latest_{任务类型}.json`，如需保留历史配置请用 `--config-out`。
 - 测试模式复用训练集作为测试集，主要用于快速验证模型可用性和与 baseline 的一致性；如需客观评估泛化能力，建议用独立的测试集并通过 `--test-image-dir` 指定。
 - 训练完成后浏览器窗口默认保持打开，按 Enter 关闭；自动化场景可使用 `--no-keep-browser-open`。
+- 前端录屏默认开启，文件保存到 `record/` 目录，文件名格式为 `<项目名>_<训练结束时间>.webm`；如需关闭使用 `--no-record`。
