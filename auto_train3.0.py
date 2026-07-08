@@ -136,6 +136,7 @@ DEFAULT_WEBBRIDGE = {
     "headless": False,
     "browser": "chromium",
     "slow_mo": 50,
+    "keep_browser_open": True,
 }
 
 
@@ -444,6 +445,8 @@ class AutoTrainAgent:
             cmd.append("--dry-run")
         if self.args.keep_alive:
             cmd.append("--keep-alive")
+        if self.args.keep_browser_open is False:
+            cmd.append("--no-keep-browser-open")
         if self.args.reuse:
             cmd.append("--reuse")
 
@@ -539,6 +542,12 @@ def main() -> int:
         action=argparse.BooleanOptionalAction,
         default=True,
         help="训练结束后保持平台运行（默认开启，传给 auto_train2.0.py）",
+    )
+    parser.add_argument(
+        "--keep-browser-open",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="训练结束后保持浏览器窗口打开，按 Enter 关闭（默认开启，传给 auto_train2.0.py）",
     )
     parser.add_argument(
         "--reuse",
