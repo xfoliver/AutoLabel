@@ -210,13 +210,11 @@ class PlaywrightWebBridgeAdapter(BaseWebBridge):
             raise WebBridgeError(f"获取页面状态失败: {e}")
 
     def close(self) -> None:
-        video_path = None
+        video = None
         try:
             if self._page:
                 try:
                     video = self._page.video
-                    if video:
-                        video_path = video.path()
                 except Exception:
                     pass
                 self._page.close()
@@ -233,8 +231,16 @@ class PlaywrightWebBridgeAdapter(BaseWebBridge):
         except Exception as e:
             print(f"关闭 Playwright 时出错: {e}")
 
-        # 必须在 context / browser / playwright 全部关闭后重命名，
+        # Playwright 的视频路径要在页面/上下文关闭后才可用。
+        # 重命名则必须在 context / browser / playwright 全部关闭后进行，
         # 否则 Windows 上 Playwright 仍持有视频文件句柄，会导致 WinError 32。
+        video_path = None
+        if video:
+            try:
+                video_path = video.path()
+            except Exception:
+                pass
+
         if video_path and self.record_frontend:
             self._save_recording(video_path)
         elif video_path:

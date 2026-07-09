@@ -85,8 +85,15 @@ class MainWindow(QMainWindow):
         self.clear_btn.setObjectName("clearBtn")
         self.clear_btn.clicked.connect(self._clear_logs)
 
+        self.close_browser_btn = QPushButton("关闭浏览器")
+        self.close_browser_btn.setObjectName("closeBrowserBtn")
+        self.close_browser_btn.setEnabled(False)
+        self.close_browser_btn.setCursor(Qt.PointingHandCursor)
+        self.close_browser_btn.clicked.connect(self._close_browser)
+
         btn_layout.addWidget(self.start_btn)
         btn_layout.addWidget(self.clear_btn)
+        btn_layout.addWidget(self.close_browser_btn)
         layout.addLayout(btn_layout)
 
         # 日志区
@@ -174,7 +181,8 @@ class MainWindow(QMainWindow):
             QPushButton#startBtn:disabled {
                 background: #c4b5fd;
             }
-            QPushButton#clearBtn {
+            QPushButton#clearBtn,
+            QPushButton#closeBrowserBtn {
                 background: #f3f4f6;
                 color: #4b5563;
                 font-size: 19px;
@@ -183,8 +191,13 @@ class MainWindow(QMainWindow):
                 border-radius: 12px;
                 padding: 14px 26px;
             }
-            QPushButton#clearBtn:hover {
+            QPushButton#clearBtn:hover,
+            QPushButton#closeBrowserBtn:hover {
                 background: #e5e7eb;
+            }
+            QPushButton#closeBrowserBtn:disabled {
+                background: #e5e7eb;
+                color: #9ca3af;
             }
             QLabel#logTitle {
                 font-size: 18px;
@@ -233,17 +246,28 @@ class MainWindow(QMainWindow):
 
         self.log_output.clear()
         self.start_btn.setEnabled(False)
+        self.close_browser_btn.setEnabled(False)
         self._set_status("运行中", "running")
 
         self.worker = TrainWorker(prompt, self)
         self.worker.log_received.connect(self._append_log)
         self.worker.status_changed.connect(self._set_status)
         self.worker.finished_signal.connect(self._on_finished)
+        self.worker.prompt_for_close.connect(self._enable_close_browser)
         self.worker.start()
+
+    def _enable_close_browser(self) -> None:
+        self.close_browser_btn.setEnabled(True)
+
+    def _close_browser(self) -> None:
+        if self.worker:
+            self.worker.send_enter()
+        self.close_browser_btn.setEnabled(False)
 
     def _clear_logs(self) -> None:
         self.log_output.clear()
         self._set_status("就绪", "")
+        self.close_browser_btn.setEnabled(False)
 
     def _append_log(self, line: str) -> None:
         self.log_output.append(line)
@@ -279,6 +303,7 @@ class MainWindow(QMainWindow):
 
     def _on_finished(self, code: int, elapsed: float) -> None:
         self.start_btn.setEnabled(True)
+        self.close_browser_btn.setEnabled(False)
         if code == 0:
             self._append_log(f"[完成] 训练成功，耗时 {elapsed} 秒")
             self._set_status("成功", "success")

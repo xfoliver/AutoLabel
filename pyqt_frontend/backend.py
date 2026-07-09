@@ -25,11 +25,14 @@ class TrainWorker(QThread):
     log_received = pyqtSignal(str)
     status_changed = pyqtSignal(str, str)  # status_text, style_class
     finished_signal = pyqtSignal(int, float)  # return_code, elapsed_seconds
+    prompt_for_close = pyqtSignal()  # 训练完成、等待关闭浏览器时触发
 
     def __init__(self, prompt: str, parent: Optional["QObject"] = None) -> None:  # type: ignore[name-defined]
         super().__init__(parent)
         self.prompt = prompt
         self._running = True
+        self.process: Optional[subprocess.Popen] = None
+        self._close_prompted = False
 
     def run(self) -> None:
         start_time = time.time()
@@ -41,8 +44,9 @@ class TrainWorker(QThread):
         env["PYTHONIOENCODING"] = "utf-8"
 
         try:
-            process = subprocess.Popen(
+            self.process = subprocess.Popen(
                 cmd,
+                stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
@@ -52,15 +56,18 @@ class TrainWorker(QThread):
                 env=env,
             )
 
-            for line in process.stdout:
+            for line in self.process.stdout:
                 if not self._running:
-                    process.terminate()
+                    self.process.terminate()
                     break
                 line = line.rstrip("\n")
                 if line:
                     self.log_received.emit(line)
+                    if not self._close_prompted and "训练已完成，浏览器窗口将保持打开" in line:
+                        self._close_prompted = True
+                        self.prompt_for_close.emit()
 
-            process.wait()
+            self.process.wait()
         except FileNotFoundError:
             self.log_received.emit(f"[错误] 找不到文件: {AUTO_TRAIN}")
             self.status_changed.emit("出错", "error")
@@ -73,8 +80,22 @@ class TrainWorker(QThread):
             return
 
         elapsed = round(time.time() - start_time, 2)
-        self.finished_signal.emit(process.returncode, elapsed)
+        self.finished_signal.emit(self.process.returncode, elapsed)
+
+    def send_enter(self) -> None:
+        """向子进程发送回车，用于关闭保持打开的浏览器窗口。"""
+        if self.process and self.process.poll() is None and self.process.stdin:
+            try:
+                self.process.stdin.write(os.linesep)
+                self.process.stdin.flush()
+                self.log_received.emit("[操作] 已发送关闭浏览器指令（模拟回车）")
+            except Exception as e:
+                self.log_received.emit(f"[错误] 发送关闭指令失败: {e}")
+        else:
+            self.log_received.emit("[调试] 无法发送关闭指令：子进程已结束或未接管 stdin")
 
     def stop(self) -> None:
         self._running = False
+        if self.process and self.process.poll() is None:
+            self.process.terminate()
         self.wait(1000)
