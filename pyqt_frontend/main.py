@@ -11,6 +11,7 @@ AutoTrain 4.0 PyQt5 桌面前端
 """
 
 import sys
+import time
 from typing import Optional
 
 from PyQt5.QtCore import Qt
@@ -137,7 +138,7 @@ class MainWindow(QMainWindow):
             }
             QLabel#subtitle {
                 font-size: 18px;
-                color: #6b7280;
+                color: #581c87;
                 margin-bottom: 10px;
             }
             QLabel#inputLabel {
@@ -183,21 +184,29 @@ class MainWindow(QMainWindow):
             }
             QPushButton#clearBtn,
             QPushButton#closeBrowserBtn {
-                background: #f3f4f6;
-                color: #4b5563;
+                background: qlineargradient(
+                    x1:0, y1:0, x2:1, y2:0,
+                    stop:0 #667eea,
+                    stop:1 #764ba2
+                );
+                color: white;
                 font-size: 19px;
                 font-weight: bold;
-                border: 1px solid #e5e7eb;
+                border: none;
                 border-radius: 12px;
                 padding: 14px 26px;
             }
             QPushButton#clearBtn:hover,
             QPushButton#closeBrowserBtn:hover {
-                background: #e5e7eb;
+                background: qlineargradient(
+                    x1:0, y1:0, x2:1, y2:0,
+                    stop:0 #5a6fd6,
+                    stop:1 #6a4191
+                );
             }
+            QPushButton#clearBtn:disabled,
             QPushButton#closeBrowserBtn:disabled {
-                background: #e5e7eb;
-                color: #9ca3af;
+                background: #c4b5fd;
             }
             QLabel#logTitle {
                 font-size: 18px;
@@ -223,7 +232,7 @@ class MainWindow(QMainWindow):
             }
             QLabel#footer {
                 font-size: 16px;
-                color: #9ca3af;
+                color: #581c87;
             }
             """
         )
@@ -244,7 +253,8 @@ class MainWindow(QMainWindow):
         if self.worker and self.worker.isRunning():
             self.worker.stop()
 
-        self.log_output.clear()
+        self.log_output.append("=" * 60)
+        self.log_output.append(f"[新运行] {time.strftime('%Y-%m-%d %H:%M:%S')}")
         self.start_btn.setEnabled(False)
         self.close_browser_btn.setEnabled(False)
         self._set_status("运行中", "running")
@@ -255,6 +265,9 @@ class MainWindow(QMainWindow):
         self.worker.finished_signal.connect(self._on_finished)
         self.worker.prompt_for_close.connect(self._enable_close_browser)
         self.worker.start()
+
+        self.prompt_input.clear()
+        self.prompt_input.setFocus()
 
     def _enable_close_browser(self) -> None:
         self.close_browser_btn.setEnabled(True)

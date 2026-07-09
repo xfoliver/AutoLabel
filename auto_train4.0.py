@@ -13,6 +13,7 @@ DLCV AI 训练平台自动化入口 4.0（自然语言 Agent 层）
 """
 
 import argparse
+import json
 import logging
 import os
 import re
@@ -20,7 +21,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from autotrain4.config_builder import ConfigBuilder
 from autotrain4.evaluator import InferenceEvaluator
@@ -61,6 +62,9 @@ class AutoTrain4Orchestrator:
         self.args = args
         self.project_root = Path(__file__).parent.resolve()
         self.scan_dir = self._resolve_path(args.scan_dir or "AI训练平台测试")
+        self.chat_history_path = self._resolve_path(args.chat_history or "./record/chat_history.json")
+        if getattr(args, "clear_chat_history", False):
+            self._clear_chat_history()
         self.llm = self._build_llm_client()
         self.intent: Optional[Any] = None
         self.match: Optional[Any] = None
@@ -218,8 +222,41 @@ class AutoTrain4Orchestrator:
         )
         return 0
 
+    def _load_chat_history(self) -> List[Dict[str, str]]:
+        """加载历史聊天记录。"""
+        if not self.chat_history_path.exists():
+            return []
+        try:
+            with open(self.chat_history_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, list):
+                return data
+        except Exception as e:
+            logger.warning("读取聊天记录失败: %s", e)
+        return []
+
+    def _save_chat_history(self, messages: List[Dict[str, str]]) -> None:
+        """保存聊天记录，最多保留最近 50 条。"""
+        try:
+            self.chat_history_path.parent.mkdir(parents=True, exist_ok=True)
+            # 保留最近 50 条，避免上下文过长
+            trimmed = messages[-50:]
+            with open(self.chat_history_path, "w", encoding="utf-8") as f:
+                json.dump(trimmed, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            logger.warning("保存聊天记录失败: %s", e)
+
+    def _clear_chat_history(self) -> None:
+        """清空聊天记录文件。"""
+        try:
+            if self.chat_history_path.exists():
+                self.chat_history_path.unlink()
+                logger.info("已清空聊天记录: %s", self.chat_history_path)
+        except Exception as e:
+            logger.warning("清空聊天记录失败: %s", e)
+
     def _run_general_chat(self) -> int:
-        """通用对话兜底：当用户输入不是训练/测试意图时，用 LLM 做友好回复。"""
+        """通用对话兜底：当用户输入不是训练/测试意图时，用 LLM 做友好回复并记住历史。"""
         logger.info("========== AUTO TRAIN 4.0 通用对话 ==========")
         logger.info("用户输入与训练/测试无关，进入通用对话模式")
 
@@ -228,15 +265,22 @@ class AutoTrain4Orchestrator:
             "请用友好、简洁的中文回答用户的问题。如果用户是在闲聊，可以正常回应；"
             "如果用户其实想问训练相关的问题，也可以简要介绍本平台的功能。"
         )
+
+        messages = self._load_chat_history()
+        # 确保 system 消息在最前
+        if not messages or messages[0].get("role") != "system":
+            messages.insert(0, {"role": "system", "content": system_msg})
+        # 更新 system 消息内容（如果后续有调整）
+        messages[0] = {"role": "system", "content": system_msg}
+
+        messages.append({"role": "user", "content": self.args.prompt})
+
         try:
-            answer = self.llm.chat(
-                [
-                    {"role": "system", "content": system_msg},
-                    {"role": "user", "content": self.args.prompt},
-                ]
-            )
+            answer = self.llm.chat(messages)
             if answer:
                 logger.info("[助手回复] %s", answer)
+                messages.append({"role": "assistant", "content": answer})
+                self._save_chat_history(messages)
             else:
                 logger.info("[助手回复] 抱歉，我没有理解你的问题，可以再说一次吗？")
         except Exception as e:
@@ -504,6 +548,16 @@ def main() -> int:
     parser.add_argument(
         "--latest-config",
         help="指定要回看的配置文件路径（配合 --test-latest 使用，默认自动找 config/auto_latest_*.json）",
+    )
+    parser.add_argument(
+        "--chat-history",
+        default="./record/chat_history.json",
+        help="通用对话聊天记录保存路径，默认 ./record/chat_history.json",
+    )
+    parser.add_argument(
+        "--clear-chat-history",
+        action="store_true",
+        help="启动前清空历史聊天记录",
     )
     args = parser.parse_args()
 
