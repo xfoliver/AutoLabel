@@ -6,7 +6,9 @@
 """
 
 import logging
+import re
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from .common import TASK_ALIASES
@@ -40,6 +42,8 @@ class TrainIntent:
     data_analysis: bool = True
     mentions_augmentation: bool = False
     data_augmentation: List[str] = field(default_factory=list)
+    baseline_model: Optional[str] = None
+    wants_baseline: bool = False
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -52,6 +56,8 @@ class TrainIntent:
             "data_analysis": self.data_analysis,
             "mentions_augmentation": self.mentions_augmentation,
             "data_augmentation": self.data_augmentation,
+            "baseline_model": self.baseline_model,
+            "wants_baseline": self.wants_baseline,
         }
 
 
@@ -85,6 +91,10 @@ class IntentParser:
         mode = self._canonicalize_mode(parsed.get("mode", "train"), prompt)
         categories = self._canonicalize_categories(parsed.get("categories", []))
         dataset_hint = str(parsed.get("dataset_hint", "")).strip()
+        baseline_model = self._extract_baseline_model(parsed.get("baseline_model"), prompt)
+        wants_baseline = self._wants_baseline_comparison(
+            parsed.get("wants_baseline"), baseline_model, prompt
+        )
         needs_training = bool(parsed.get("needs_training", True))
         data_analysis = bool(parsed.get("data_analysis", True))
         mentions_augmentation = bool(parsed.get("mentions_augmentation", False))
@@ -117,6 +127,8 @@ class IntentParser:
             data_analysis=data_analysis,
             mentions_augmentation=mentions_augmentation,
             data_augmentation=data_augmentation,
+            baseline_model=baseline_model,
+            wants_baseline=wants_baseline,
         )
 
     def _canonicalize_task_type(self, raw: str) -> str:
@@ -142,7 +154,11 @@ class IntentParser:
                 return "test"
             if lower in {"dry_run", "dry-run", "dryrun"}:
                 return "dry_run"
+            # 即使 LLM 返回 train，如果用户明确提到测试/评估关键词，也进入测试模式
             if lower in {"train", "training"}:
+                prompt_lower = prompt.lower()
+                if any(kw.lower() in prompt_lower for kw in self.TEST_KEYWORDS):
+                    return "test"
                 return "train"
 
         lower = prompt.lower()
@@ -150,6 +166,38 @@ class IntentParser:
             if kw.lower() in lower:
                 return "test"
         return "train"
+
+    BASELINE_KEYWORDS = ["baseline", "基准", "对比", "比较", "compare"]
+
+    def _extract_baseline_model(self, raw: Any, prompt: str) -> Optional[str]:
+        """从 LLM 输出或用户原始输入中提取基准模型 .dvp 文件路径。"""
+        if raw:
+            s = str(raw).strip().strip('"\'')
+            if s.lower().endswith(".dvp"):
+                return s
+
+        # 兜底：用正则从 prompt 中匹配 .dvp 文件路径
+        # 支持带空格、斜杠、下划线、连字符、点号的相对/绝对路径
+        matches = re.findall(r"[\w\s/\\._-]+?\.dvp", prompt, re.IGNORECASE)
+        for m in matches:
+            s = m.strip().strip('"\'，,。')
+            if s and s.lower().endswith(".dvp"):
+                return s
+        return None
+
+    def _wants_baseline_comparison(
+        self,
+        raw: Any,
+        baseline_model: Optional[str],
+        prompt: str,
+    ) -> bool:
+        """判断用户是否希望与 baseline 模型做对比。"""
+        if raw is not None:
+            return bool(raw)
+        if baseline_model:
+            return True
+        lower = prompt.lower()
+        return any(kw.lower() in lower for kw in self.BASELINE_KEYWORDS)
 
     def _canonicalize_categories(self, raw: List[Any]) -> List[str]:
         """清理并去重类别列表。"""

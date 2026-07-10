@@ -23,6 +23,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from autotrain4.common import BASELINE_PREFIXES
 from autotrain4.config_builder import ConfigBuilder
 from autotrain4.evaluator import InferenceEvaluator
 from autotrain4.inference_client import InferenceClient
@@ -94,13 +95,13 @@ class AutoTrain4Orchestrator:
         self.intent = parser.parse(self.args.prompt)
         logger.info("解析意图: %s", self.intent.to_dict())
 
-        # 2. 非训练/测试意图：进入通用对话兜底
-        if not self.intent.needs_training and not self.args.test_latest:
-            return self._run_general_chat()
-
-        # 3. 测试模式：直接对最新模型 + 训练集跑推理
+        # 2. 测试模式：直接对最新模型 + 训练集跑推理
         if self.args.test_latest or self.intent.mode == "test":
             return self._run_test_latest()
+
+        # 3. 非训练意图：进入通用对话兜底
+        if not self.intent.needs_training:
+            return self._run_general_chat()
 
         # 4. 语义匹配数据集（或被 --folder 覆盖）
         self.match = self._resolve_match()
@@ -215,10 +216,11 @@ class AutoTrain4Orchestrator:
         logger.info("测试图片目录（复用训练集）: %s", dataset_dir)
 
         self.config_path = cfg_path
+        baseline_model = self._effective_baseline_model(task_type)
         self._run_inference_and_compare_with_paths(
             new_dvp=new_dvp,
             image_dir=dataset_dir,
-            baseline_model_path=self.args.baseline_model,
+            baseline_model_path=baseline_model,
         )
         return 0
 
@@ -321,6 +323,60 @@ class AutoTrain4Orchestrator:
             return None
         return max(dvps, key=lambda p: p.stat().st_mtime)
 
+    def _resolve_baseline_model(
+        self,
+        task_type: str,
+        hint: Optional[str] = None,
+    ) -> Optional[Path]:
+        """根据任务类型自动定位 Baseline Models 目录下的基准模型。"""
+        baseline_dir = self.project_root / "Baseline Models"
+        if not baseline_dir.exists():
+            return None
+
+        prefix = BASELINE_PREFIXES.get(task_type)
+        if not prefix:
+            return None
+
+        candidates = [
+            p for p in baseline_dir.glob("*.dvp")
+            if p.name.upper().startswith(prefix.upper() + "-")
+        ]
+        if hint:
+            hint_lower = hint.lower()
+            candidates = [p for p in candidates if hint_lower in p.name.lower()]
+
+        if not candidates:
+            return None
+        return max(candidates, key=lambda p: p.stat().st_mtime)
+
+    def _effective_baseline_model(self, task_type: str) -> Optional[str]:
+        """综合命令行参数、意图中的路径、自动定位，得到最终 baseline 模型路径。"""
+        # 1. 命令行参数优先级最高
+        if self.args.baseline_model:
+            return self.args.baseline_model
+
+        # 2. 意图中显式指定的路径
+        intent_baseline = self.intent.baseline_model if self.intent else None
+        if intent_baseline:
+            path = self._resolve_path(intent_baseline)
+            if path.exists():
+                return str(path)
+            # 也尝试相对于项目根目录
+            rel_path = self.project_root / intent_baseline
+            if rel_path.exists():
+                return str(rel_path)
+
+        # 3. 用户表达了对比意愿，自动定位 baseline
+        wants_baseline = self.intent.wants_baseline if self.intent else False
+        if wants_baseline:
+            resolved = self._resolve_baseline_model(task_type, hint=intent_baseline)
+            if resolved:
+                logger.info("自动定位到基准模型: %s", resolved)
+                return str(resolved)
+            logger.warning("用户希望对比 baseline，但未找到任务类型 %s 对应的基准模型", task_type)
+
+        return None
+
     def _load_json_config(self, path: Path) -> Dict[str, Any]:
         """加载 JSON 配置文件。"""
         import json
@@ -373,9 +429,16 @@ class AutoTrain4Orchestrator:
             logger.warning("未找到新生成的 .dvp 模型文件，跳过推理")
             return
 
+        task_type = self.config.get("project", {}).get("task_type") or (
+            self.intent.task_type if self.intent else ""
+        )
+        baseline_model = self._effective_baseline_model(task_type)
+
         logger.info("========== AUTO TRAIN 4.0 推理评估 ==========")
         logger.info("新模型: %s", new_dvp)
         logger.info("测试图片目录: %s", test_image_dir)
+        if baseline_model:
+            logger.info("基准模型: %s", baseline_model)
 
         client = InferenceClient(
             base_url=self.args.inference_api_url,
@@ -387,7 +450,7 @@ class AutoTrain4Orchestrator:
             report = evaluator.evaluate(
                 new_model_path=new_dvp,
                 image_dir=test_image_dir,
-                baseline_model_path=self.args.baseline_model,
+                baseline_model_path=baseline_model,
             )
 
             report_path = self._resolve_path(self.args.inference_report_path or "inference_report.json")

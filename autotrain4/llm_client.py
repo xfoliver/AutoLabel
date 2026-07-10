@@ -117,7 +117,9 @@ class LLMClient:
             '  "mode": "train",\n'
             '  "data_analysis": true,\n'
             '  "mentions_augmentation": false,\n'
-            '  "data_augmentation": []\n'
+            '  "data_augmentation": [],\n'
+            '  "baseline_model": "用户指定的基准模型 .dvp 路径，没有则为空字符串",\n'
+            '  "wants_baseline": false\n'
             "}\n"
             "注意：\n"
             "1. needs_training 是布尔值：只有当用户明确想启动一次训练/测试任务时才为 true；"
@@ -131,7 +133,9 @@ class LLMClient:
             "调整图像大小、随机比例缩放、随机翻转、随机固定角度旋转、随机裁剪、"
             "随机调整亮度、随机调整对比度、随机JPG编码。"
             "只有当 mentions_augmentation 为 true 时才填写；否则必须返回空列表。\n"
-            "7. 只返回 JSON，不要附加说明。"
+            "7. baseline_model：如果用户明确给出 .dvp 路径就返回；只提到 baseline/基准/对比但无路径时返回空字符串，并把 wants_baseline 设为 true。\n"
+            "8. 如果用户想测试或对比模型，mode 返回 test；想训练则返回 train。\n"
+            "9. 只返回 JSON，不要附加说明。"
         )
         content = self.chat(
             [

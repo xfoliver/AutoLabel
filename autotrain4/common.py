@@ -55,6 +55,17 @@ TASK_TEMPLATES: Dict[str, str] = {
     "旋转框检测": "config/rotate_train_automation_config.json",
 }
 
+# 规范任务类型 -> baseline 模型文件名前缀
+BASELINE_PREFIXES: Dict[str, str] = {
+    "OCR": "OCR",
+    "分类": "CLS",
+    "目标检测": "DET",
+    "DETR": "DETR",
+    "实例分割": "ISEG",
+    "语义分割": "SSEG",
+    "旋转框检测": "ROTATE",
+}
+
 # 用于匹配文件夹名的关键字（不区分大小写）
 TASK_FOLDER_KEYWORDS: Dict[str, List[str]] = {
     "OCR": ["ocr"],
