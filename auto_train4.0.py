@@ -174,7 +174,10 @@ class AutoTrain4Orchestrator:
             return result.returncode
 
         # 训练成功后，通过 LLM 询问用户是否生成 inference report / 与 baseline 对比
-        self._interactive_post_train()
+        if self.args.post_train:
+            self._interactive_post_train()
+        else:
+            logger.info("--no-post-train 已设置，跳过训练后交互")
         return 0
 
     def _run_test_latest(self) -> int:
@@ -704,6 +707,12 @@ def main() -> int:
         "--record-dir",
         default="./record",
         help="Playwright 录屏保存目录（默认 ./record）",
+    )
+    parser.add_argument(
+        "--post-train",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="训练结束后进入交互式后续操作询问（默认开启；--no-post-train 直接退出）",
     )
     parser.add_argument(
         "--reuse",

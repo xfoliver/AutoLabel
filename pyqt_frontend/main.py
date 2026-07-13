@@ -276,8 +276,12 @@ class MainWindow(QMainWindow):
         self.close_browser_btn.setEnabled(True)
 
     def _close_browser(self) -> None:
+        """关闭保持打开的浏览器，并等待后台进程收尾后恢复 UI。"""
         if self.worker:
             self.worker.send_enter()
+            self._append_log("[操作] 已请求关闭浏览器，等待后台进程退出...")
+            # 立即给用户反馈：不再卡在「运行中」的等待感；真正完成仍由 _on_finished 恢复开始按钮
+            self._set_status("关闭中", "running")
         self.close_browser_btn.setEnabled(False)
 
     def _on_post_train_prompt(self, question: str) -> None:

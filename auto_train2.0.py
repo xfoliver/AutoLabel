@@ -869,7 +869,12 @@ class DLCVAutoTrainer:
         return "\n".join(lines)
 
     def _run_webbridge_in_thread(self) -> None:
-        """在独立线程中运行 Playwright 自动化（包含录屏），实现线程隔离。"""
+        """在独立线程中运行 Playwright 自动化（包含录屏），实现线程隔离。
+
+        Playwright 的启动/操作/关闭必须在同一线程完成。
+        训练完成后的「关闭浏览器」等待也放在该线程内，用 stdin + 信号文件双通道，
+        避免 Windows 嵌套子进程下 input() 收不到 PyQt 管道回车、UI 卡在「运行中」。
+        """
         import threading
 
         exception = None
@@ -887,6 +892,52 @@ class DLCVAutoTrainer:
 
         if exception:
             raise exception
+
+    def _wait_for_browser_close_signal(self) -> None:
+        """等待用户关闭浏览器：stdin 回车 或 关闭信号文件。
+
+        PyQt 前端会同时写 stdin 回车 + 创建信号文件，双通道保证嵌套子进程
+        在 Windows 下也能可靠退出，从而让前端状态从「运行中」恢复。
+        """
+        import threading
+
+        signal_path = os.environ.get("AUTOTRAIN_CLOSE_SIGNAL", "").strip()
+        signal_file = Path(signal_path) if signal_path else None
+
+        # 若用户在进入等待前已点击「关闭浏览器」，信号文件已存在，直接返回
+        if signal_file and signal_file.exists():
+            logger.info("检测到已有关闭信号文件，直接关闭浏览器")
+            return
+
+        done = threading.Event()
+
+        def _watch_stdin() -> None:
+            try:
+                # 放到线程里读 stdin，以便同时轮询信号文件
+                sys.stdin.readline()
+            except Exception:
+                pass
+            finally:
+                done.set()
+
+        def _watch_signal_file() -> None:
+            if not signal_file:
+                return
+            while not done.is_set():
+                try:
+                    if signal_file.exists():
+                        done.set()
+                        return
+                except Exception:
+                    pass
+                time.sleep(0.2)
+
+        t_stdin = threading.Thread(target=_watch_stdin, name="WaitBrowserCloseStdin", daemon=True)
+        t_file = threading.Thread(target=_watch_signal_file, name="WaitBrowserCloseFile", daemon=True)
+        t_stdin.start()
+        t_file.start()
+        done.wait()
+        logger.info("收到关闭浏览器信号，继续收尾...")
 
     def run_webbridge_automation(self) -> None:
         """通过 Kimi WebBridge 完成 UI 自动化。"""
@@ -908,7 +959,6 @@ class DLCVAutoTrainer:
         bridge = None
         # 配置文件优先级高于命令行：若配置中已设置 keep_browser_open 则使用配置值
         keep_open = wb_cfg.get("keep_browser_open", self.keep_browser_open)
-        project_cfg = self.config.get("project", {})
 
         try:
             bridge = create_webbridge(wb_cfg)
@@ -962,18 +1012,25 @@ class DLCVAutoTrainer:
 
             if keep_open:
                 logger.info("训练已完成，浏览器窗口将保持打开，按 Enter 关闭...")
+                print("训练已完成，按 Enter 关闭浏览器窗口...", flush=True)
                 try:
-                    input("训练已完成，按 Enter 关闭浏览器窗口...")
+                    self._wait_for_browser_close_signal()
                 except (EOFError, KeyboardInterrupt):
-                    pass
+                    logger.info("收到中断，准备关闭浏览器")
         except WebBridgeError as e:
             logger.error("Kimi WebBridge 调用失败: %s", e)
             raise AutoTrainError(f"WebBridge 调用失败: {e}")
         finally:
             if bridge is not None:
-                bridge.close()
-                self._rename_playwright_video(bridge)
-            self._bridge = None
+                try:
+                    bridge.close()
+                except Exception as e:
+                    logger.warning("关闭浏览器时出错: %s", e)
+                try:
+                    self._rename_playwright_video(bridge)
+                except Exception as e:
+                    logger.warning("保存录屏时出错: %s", e)
+                self._bridge = None
 
     def _rename_playwright_video(self, bridge) -> None:
         """将 Playwright 生成的 <hash>.webm 重命名为 <项目名>_<时间>.webm。"""

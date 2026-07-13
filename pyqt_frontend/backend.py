@@ -7,6 +7,7 @@
 import os
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import Optional
@@ -34,20 +35,31 @@ class TrainWorker(QThread):
         self._running = True
         self.process: Optional[subprocess.Popen] = None
         self._close_prompted = False
+        # 关闭浏览器信号文件：即使嵌套 stdin 管道在 Windows 下失效，也能通过文件通知 2.0 退出
+        self._close_signal_path = Path(tempfile.gettempdir()) / f"autotrain_close_{os.getpid()}_{id(self)}.signal"
 
     def run(self) -> None:
         start_time = time.time()
         self.status_changed.emit("运行中", "running")
         self.log_received.emit(f"[开始] 提示词: {self.prompt}")
 
+        # 清理可能残留的信号文件
+        try:
+            if self._close_signal_path.exists():
+                self._close_signal_path.unlink()
+        except Exception:
+            pass
+
         cmd = [
             sys.executable,
             str(AUTO_TRAIN),
             "--prompt",
             self.prompt,
+            "--no-post-train",
         ]
         env = os.environ.copy()
         env["PYTHONIOENCODING"] = "utf-8"
+        env["AUTOTRAIN_CLOSE_SIGNAL"] = str(self._close_signal_path)
 
         try:
             self.process = subprocess.Popen(
@@ -89,27 +101,38 @@ class TrainWorker(QThread):
             self.status_changed.emit("出错", "error")
             self.finished_signal.emit(-1, round(time.time() - start_time, 2))
             return
+        finally:
+            self._cleanup_signal_file()
 
         elapsed = round(time.time() - start_time, 2)
         self.finished_signal.emit(self.process.returncode, elapsed)
 
     def send_enter(self) -> None:
-        """向子进程发送回车，用于关闭保持打开的浏览器窗口。"""
+        """向子进程发送关闭浏览器指令（stdin 回车 + 信号文件双通道）。"""
+        # 1. 信号文件：auto_train2.0 主线程会轮询 AUTOTRAIN_CLOSE_SIGNAL
+        try:
+            self._close_signal_path.parent.mkdir(parents=True, exist_ok=True)
+            self._close_signal_path.write_text("close", encoding="utf-8")
+            self.log_received.emit(f"[操作] 已写入关闭信号文件: {self._close_signal_path.name}")
+        except Exception as e:
+            self.log_received.emit(f"[错误] 写入关闭信号文件失败: {e}")
+
+        # 2. stdin 回车：兼容命令行直接跑 2.0 的场景
         if self.process and self.process.poll() is None and self.process.stdin:
             try:
-                self.process.stdin.write(os.linesep)
+                self.process.stdin.write("\n")
                 self.process.stdin.flush()
                 self.log_received.emit("[操作] 已发送关闭浏览器指令（模拟回车）")
             except Exception as e:
                 self.log_received.emit(f"[错误] 发送关闭指令失败: {e}")
         else:
-            self.log_received.emit("[调试] 无法发送关闭指令：子进程已结束或未接管 stdin")
+            self.log_received.emit("[调试] 子进程 stdin 不可用，已依赖信号文件关闭")
 
     def send_input(self, text: str) -> None:
         """向子进程发送任意输入（用于训练后 LLM 对话）。"""
         if self.process and self.process.poll() is None and self.process.stdin:
             try:
-                self.process.stdin.write(text + os.linesep)
+                self.process.stdin.write(text + "\n")
                 self.process.stdin.flush()
                 self.log_received.emit(f"[操作] 已发送输入: {text}")
             except Exception as e:
@@ -119,6 +142,25 @@ class TrainWorker(QThread):
 
     def stop(self) -> None:
         self._running = False
+        # 尽量先发关闭信号，让 2.0 正常收尾
+        try:
+            self._close_signal_path.write_text("close", encoding="utf-8")
+        except Exception:
+            pass
         if self.process and self.process.poll() is None:
+            try:
+                if self.process.stdin:
+                    self.process.stdin.write("\n")
+                    self.process.stdin.flush()
+            except Exception:
+                pass
             self.process.terminate()
-        self.wait(1000)
+        self.wait(3000)
+        self._cleanup_signal_file()
+
+    def _cleanup_signal_file(self) -> None:
+        try:
+            if self._close_signal_path.exists():
+                self._close_signal_path.unlink()
+        except Exception:
+            pass
