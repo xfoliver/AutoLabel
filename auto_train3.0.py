@@ -137,9 +137,6 @@ DEFAULT_WEBBRIDGE = {
     "browser": "chromium",
     "slow_mo": 50,
     "keep_browser_open": True,
-    "record_frontend": True,
-    "record_dir": "./record",
-    "record_size": {"width": 1280, "height": 720},
 }
 
 
@@ -450,8 +447,6 @@ class AutoTrainAgent:
             cmd.append("--keep-alive")
         if self.args.keep_browser_open is False:
             cmd.append("--no-keep-browser-open")
-        if self.args.record is False:
-            cmd.append("--no-record")
         if self.args.reuse:
             cmd.append("--reuse")
 
@@ -553,12 +548,6 @@ def main() -> int:
         action=argparse.BooleanOptionalAction,
         default=True,
         help="训练结束后保持浏览器窗口打开，按 Enter 关闭（默认开启，传给 auto_train2.0.py）",
-    )
-    parser.add_argument(
-        "--record",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="录制前端自动化流程并保存到 record 目录（默认开启，传给 auto_train2.0.py）",
     )
     parser.add_argument(
         "--reuse",

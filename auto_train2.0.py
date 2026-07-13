@@ -79,7 +79,6 @@ class DLCVAutoTrainer:
         dry_run: bool = False,
         reuse: bool = False,
         keep_browser_open: bool = True,
-        record_frontend: bool = True,
     ):
         self.config_path = Path(config_path).resolve()
         self.config: Dict[str, Any] = {}
@@ -88,7 +87,6 @@ class DLCVAutoTrainer:
         self.dry_run = dry_run
         self.reuse = reuse
         self.keep_browser_open = keep_browser_open
-        self.record_frontend = record_frontend
         self.backend_url: str = "http://127.0.0.1:9887"
         self.frontend_url: str = "http://localhost:8842"
         self.project_id: Optional[str] = None
@@ -738,6 +736,7 @@ class DLCVAutoTrainer:
         MAX_MISSING_SESSION = 6
 
         while True:
+            self._keep_browser_active()
             session_status = self._fetch_session_status(self.training_id)
 
             if session_status in self.TERMINAL_STATUSES:
@@ -869,6 +868,26 @@ class DLCVAutoTrainer:
         ])
         return "\n".join(lines)
 
+    def _run_webbridge_in_thread(self) -> None:
+        """在独立线程中运行 Playwright 自动化（包含录屏），实现线程隔离。"""
+        import threading
+
+        exception = None
+
+        def target():
+            nonlocal exception
+            try:
+                self.run_webbridge_automation()
+            except Exception as e:
+                exception = e
+
+        thread = threading.Thread(target=target, name="PlaywrightWebBridgeWorker")
+        thread.start()
+        thread.join()
+
+        if exception:
+            raise exception
+
     def run_webbridge_automation(self) -> None:
         """通过 Kimi WebBridge 完成 UI 自动化。"""
         if not self.project_id:
@@ -887,19 +906,14 @@ class DLCVAutoTrainer:
         monitor = self.config["training"].get("monitor_until_complete", True)
 
         bridge = None
-        # 配置文件优先级高于命令行：若配置中已设置 keep_browser_open / record_frontend 则使用配置值
+        # 配置文件优先级高于命令行：若配置中已设置 keep_browser_open 则使用配置值
         keep_open = wb_cfg.get("keep_browser_open", self.keep_browser_open)
-        _rf = wb_cfg.get("record_frontend", self.record_frontend)
-        wb_cfg["record_frontend"] = _rf if isinstance(_rf, bool) else str(_rf).strip().lower() in ("true", "1", "yes", "on")
         project_cfg = self.config.get("project", {})
-        wb_cfg["record_name"] = wb_cfg.get(
-            "record_name",
-            project_cfg.get("name") or project_cfg.get("task_type") or "autotrain",
-        )
 
         try:
             bridge = create_webbridge(wb_cfg)
             bridge.connect()
+            self._bridge = bridge
             logger.info("连接 Kimi WebBridge (adapter=%s)", wb_cfg.get("adapter", "playwright"))
 
             # 如果 Playwright 适配器支持新流程，从项目信息页按菜单一步步走
@@ -958,6 +972,46 @@ class DLCVAutoTrainer:
         finally:
             if bridge is not None:
                 bridge.close()
+                self._rename_playwright_video(bridge)
+            self._bridge = None
+
+    def _rename_playwright_video(self, bridge) -> None:
+        """将 Playwright 生成的 <hash>.webm 重命名为 <项目名>_<时间>.webm。"""
+        video_path = getattr(bridge, "video_path", None)
+        if not video_path:
+            return
+        src = Path(video_path)
+        if not src.exists():
+            return
+        wb_cfg = self.config.get("webbridge", {})
+        record_dir = wb_cfg.get("record_video_dir")
+        if not record_dir:
+            return
+        try:
+            target_dir = Path(record_dir)
+            target_dir.mkdir(parents=True, exist_ok=True)
+            project_name = self.config.get("project", {}).get("name", "unknown")
+            timestamp = time.strftime("%Y%m%d_%H%M%S")
+            dst = target_dir / f"{project_name}_{timestamp}.webm"
+            src.rename(dst)
+            logger.info("录屏文件已保存: %s", dst)
+        except Exception as e:
+            logger.warning("重命名 Playwright 录屏文件失败: %s", e)
+
+    def _keep_browser_active(self) -> None:
+        """定期调用，防止 Chromium 因窗口不在前台而节流渲染/定时器，导致录屏画面卡住。"""
+        try:
+            bridge = getattr(self, "_bridge", None)
+            if not bridge:
+                return
+            page = getattr(bridge, "_page", None)
+            if not page or page.is_closed():
+                return
+            page.bring_to_front()
+            # 触发一次轻量 JS 执行，让浏览器认为页面仍在活跃交互
+            page.evaluate("() => document.title")
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------
     # 主流程
@@ -1006,9 +1060,10 @@ class DLCVAutoTrainer:
         self.update_hyperparameters()
 
         # WebBridge 自动化 或 API 兜底
+        # 把 Playwright 相关操作放到独立线程，避免和主线程/UI 线程竞争导致录屏失败
         if wb_enabled:
             try:
-                self.run_webbridge_automation()
+                self._run_webbridge_in_thread()
             except Exception as e:
                 logger.error("WebBridge 自动化失败: %s", e)
                 logger.info("尝试使用后端 API 兜底启动训练")
@@ -1059,12 +1114,6 @@ def main() -> int:
         default=True,
         help="训练结束后保持浏览器窗口打开，按 Enter 关闭（默认开启）",
     )
-    parser.add_argument(
-        "--record",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="录制前端自动化流程并保存到 record 目录（默认开启）",
-    )
     parser.add_argument("--reuse", action="store_true", help="复用已运行的平台/后端实例")
     args = parser.parse_args()
 
@@ -1074,7 +1123,6 @@ def main() -> int:
         dry_run=args.dry_run,
         reuse=args.reuse,
         keep_browser_open=args.keep_browser_open,
-        record_frontend=args.record,
     )
     try:
         trainer.run()

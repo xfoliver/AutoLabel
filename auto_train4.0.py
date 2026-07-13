@@ -121,6 +121,8 @@ class AutoTrain4Orchestrator:
             full_train=self.args.full_train,
             adjustments=judge_result.adjustments,
             llm_client=self.llm,
+            record=self.args.record,
+            record_dir=self.args.record_dir,
         )
         self.config_path = builder.save(self.args.config_out)
 
@@ -161,8 +163,6 @@ class AutoTrain4Orchestrator:
             cmd.append("--keep-alive")
         if self.args.keep_browser_open is False:
             cmd.append("--no-keep-browser-open")
-        if self.args.record is False:
-            cmd.append("--no-record")
         if self.args.reuse:
             cmd.append("--reuse")
 
@@ -173,8 +173,8 @@ class AutoTrain4Orchestrator:
         if result.returncode != 0:
             return result.returncode
 
-        # 训练成功，执行推理与基准对比
-        self._run_inference_and_compare()
+        # 训练成功后，通过 LLM 询问用户是否生成 inference report / 与 baseline 对比
+        self._interactive_post_train()
         return 0
 
     def _run_test_latest(self) -> int:
@@ -389,6 +389,7 @@ class AutoTrain4Orchestrator:
         new_dvp: Path,
         image_dir: Path,
         baseline_model_path: Optional[str] = None,
+        report_path: Optional[Path] = None,
     ) -> None:
         """使用指定路径执行推理评估。"""
         client = InferenceClient(
@@ -404,10 +405,11 @@ class AutoTrain4Orchestrator:
                 baseline_model_path=baseline_model_path,
             )
 
-            report_path = self._resolve_path(
-                self.args.inference_report_path
-                or f"test_report_{new_dvp.stem}.json"
-            )
+            if report_path is None:
+                report_path = self._resolve_path(
+                    self.args.inference_report_path
+                    or f"test_report_{new_dvp.stem}.json"
+                )
             report.save(report_path)
             logger.info("推理评估完成，报告: %s", report_path)
         except Exception as e:
@@ -458,6 +460,139 @@ class AutoTrain4Orchestrator:
             logger.info("推理评估完成，报告: %s", report_path)
         except Exception as e:
             logger.exception("推理评估失败: %s", e)
+
+    def _interactive_post_train(self) -> None:
+        """训练成功后，通过 LLM 询问用户是否生成 inference report 或与 baseline 对比。"""
+        logger.info("========== 训练完成，进入后续操作询问 ==========")
+
+        if not self.llm or not self.llm.available:
+            logger.info("LLM 不可用，跳过训练后交互")
+            return
+
+        cfg = self._load_generated_config() if self.config_path else {}
+        project = cfg.get("project", {}) or self.config.get("project", {})
+        task_type = project.get("task_type") or (
+            self.intent.task_type if self.intent else "unknown"
+        )
+        work_dir = project.get("work_dir")
+        dataset_dir = project.get("dataset_dir")
+        baseline_model = self._effective_baseline_model(task_type)
+        new_dvp = self._find_new_dvp()
+
+        context_lines = [
+            "训练已完成，上下文如下：",
+            f"- 任务类型: {task_type}",
+            f"- 工作目录: {work_dir or '未知'}",
+            f"- 数据集目录: {dataset_dir or '未知'}",
+            f"- 新模型: {new_dvp or '未找到'}",
+        ]
+        if baseline_model:
+            context_lines.append(f"- 可用基准模型: {baseline_model}")
+        else:
+            context_lines.append("- 可用基准模型: 无")
+        context = "\n".join(context_lines)
+
+        # 1. LLM 生成询问语句
+        ask_messages = [
+            {
+                "role": "system",
+                "content": (
+                    "你是 DLCV 训练助手。训练刚刚完成，请用一句简洁友好的中文询问用户接下来想做什么。"
+                    "可选项包括：生成 inference report、与基准模型对比、结束。"
+                    "请只输出要问用户的问题，不要输出其他内容。"
+                ),
+            },
+            {"role": "user", "content": context},
+        ]
+        try:
+            question = self.llm.chat(ask_messages, temperature=0.7) or "训练已完成，您希望接下来做什么？"
+        except Exception as e:
+            logger.warning("LLM 生成询问失败: %s", e)
+            question = "训练已完成，您希望接下来做什么？（生成 inference report / 与基准模型对比 / 结束）"
+
+        # 输出带标记的问题，方便 PyQt 前端捕获并弹窗
+        print(f"[POST_TRAIN_PROMPT] {question.strip()}")
+
+        # 2. 读取用户输入
+        try:
+            user_input = input("[POST_TRAIN_INPUT] ").strip()
+        except (EOFError, KeyboardInterrupt):
+            user_input = ""
+
+        if not user_input or user_input.lower() in ("结束", "exit", "no", "不用", "否", "跳过"):
+            print("[POST_TRAIN_RESULT] 用户未要求后续操作，流程结束")
+            return
+
+        # 3. LLM 解析用户意图
+        parse_messages = [
+            {
+                "role": "system",
+                "content": (
+                    "你是任务解析助手。训练已完成，请根据上下文解析用户后续需求。"
+                    "必须返回 JSON，格式如下（不要 Markdown 代码块）：\n"
+                    "{\n"
+                    '  "action": "inference_report|compare_baseline|chat|exit",\n'
+                    '  "test_image_dir": "测试图片目录，未指定则默认使用训练集目录",\n'
+                    '  "baseline_model": "基准模型路径，未指定则使用上下文中的可用基准模型",\n'
+                    '  "report_path": "报告保存路径，默认 inference_report.json"\n'
+                    "}\n"
+                    "action 说明：\n"
+                    "- inference_report：仅对新模型生成 inference report\n"
+                    "- compare_baseline：对新模型和基准模型做对比报告\n"
+                    "- chat：闲聊/不需要执行操作\n"
+                    "- exit：用户明确结束"
+                ),
+            },
+            {"role": "user", "content": f"{context}\n\n用户需求: {user_input}"},
+        ]
+        try:
+            parse_resp = self.llm.chat(parse_messages, temperature=0.0) or ""
+            decision = json.loads(parse_resp.strip())
+        except Exception as e:
+            logger.warning("解析训练后需求失败: %s", e)
+            print(f"[POST_TRAIN_RESULT] 无法解析需求，不执行后续操作")
+            return
+
+        action = decision.get("action", "exit")
+        if action == "exit":
+            print("[POST_TRAIN_RESULT] 用户结束，不执行后续操作")
+            return
+        if action == "chat":
+            print(f"[POST_TRAIN_RESULT] {decision.get('reply', '收到')}")
+            return
+
+        # 4. 执行动作
+        if not new_dvp:
+            print("[POST_TRAIN_RESULT] 未找到新模型，无法生成报告")
+            return
+
+        test_dir_str = decision.get("test_image_dir") or dataset_dir
+        if not test_dir_str:
+            print("[POST_TRAIN_RESULT] 未指定测试图片目录，无法生成报告")
+            return
+        test_dir = self._resolve_path(test_dir_str)
+        if not test_dir.exists():
+            print(f"[POST_TRAIN_RESULT] 测试图片目录不存在: {test_dir}")
+            return
+
+        report_path_str = decision.get("report_path") or "inference_report.json"
+        report_path = self._resolve_path(report_path_str)
+
+        baseline = decision.get("baseline_model") or baseline_model
+
+        logger.info("========== AUTO TRAIN 4.0 训练后推理评估 ==========")
+        logger.info("新模型: %s", new_dvp)
+        logger.info("测试图片目录: %s", test_dir)
+        if baseline:
+            logger.info("基准模型: %s", baseline)
+
+        self._run_inference_and_compare_with_paths(
+            new_dvp=new_dvp,
+            image_dir=test_dir,
+            baseline_model_path=baseline,
+            report_path=report_path,
+        )
+        print(f"[POST_TRAIN_RESULT] 报告已保存: {report_path}")
 
     def _find_new_dvp(self) -> Optional[Path]:
         """查找本次训练生成的 .dvp 模型文件。"""
@@ -563,7 +698,12 @@ def main() -> int:
         "--record",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help="录制前端自动化流程并保存到 record 目录（默认开启，传给 auto_train2.0.py）",
+        help="使用 Playwright 内置录屏（默认开启）",
+    )
+    parser.add_argument(
+        "--record-dir",
+        default="./record",
+        help="Playwright 录屏保存目录（默认 ./record）",
     )
     parser.add_argument(
         "--reuse",

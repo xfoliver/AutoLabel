@@ -19,6 +19,7 @@ from PyQt5.QtGui import QColor, QFont, QPalette
 from PyQt5.QtWidgets import (
     QApplication,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QMainWindow,
     QMessageBox,
@@ -264,6 +265,8 @@ class MainWindow(QMainWindow):
         self.worker.status_changed.connect(self._set_status)
         self.worker.finished_signal.connect(self._on_finished)
         self.worker.prompt_for_close.connect(self._enable_close_browser)
+        self.worker.process_started.connect(self._enable_close_browser)
+        self.worker.post_train_prompt.connect(self._on_post_train_prompt)
         self.worker.start()
 
         self.prompt_input.clear()
@@ -276,6 +279,16 @@ class MainWindow(QMainWindow):
         if self.worker:
             self.worker.send_enter()
         self.close_browser_btn.setEnabled(False)
+
+    def _on_post_train_prompt(self, question: str) -> None:
+        """训练完成后 LLM 询问后续需求，弹出输入框让用户回复。"""
+        text, ok = QInputDialog.getText(
+            self,
+            "训练完成",
+            question,
+        )
+        if self.worker:
+            self.worker.send_input(text if ok else "")
 
     def _clear_logs(self) -> None:
         self.log_output.clear()

@@ -96,9 +96,8 @@ DEFAULT_WEBBRIDGE = {
     "wait_loading_done": False,
     "post_click_delay": 2.0,
     "keep_browser_open": True,
-    "record_frontend": True,
-    "record_dir": "./record",
-    "record_size": {"width": 1280, "height": 720},
+    "record_video_dir": None,
+    "record_video_size": {"width": 1280, "height": 720},
 }
 
 # 图片扩展名，用于数据集类别自动检测

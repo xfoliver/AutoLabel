@@ -90,19 +90,24 @@ class PlaywrightWebBridgeAdapter(BaseWebBridge):
         self.step_delay = float(config.get("step_delay", 1.0))
         self.wait_loading_done = bool(config.get("wait_loading_done", False))
         self.post_click_delay = float(config.get("post_click_delay", 2.0))
-        self.launch_args = config.get("launch_args", ["--disable-blink-features=AutomationControlled"])
-        self.video_dir = config.get("video_dir")
-        self.video_size = config.get("video_size", {"width": 1280, "height": 720})
-        self.record_frontend = self._parse_bool(config.get("record_frontend", True))
-        self.record_dir = config.get("record_dir", "./record")
-        self.record_name = config.get("record_name")
-        self.record_size = config.get("record_size", {"width": 1280, "height": 720})
+        self.launch_args = config.get(
+            "launch_args",
+            [
+                "--disable-blink-features=AutomationControlled",
+                "--disable-background-timer-throttling",
+                "--disable-renderer-backgrounding",
+                "--disable-backgrounding-occluded-windows",
+                "--disable-features=CalculateNativeWinOcclusion",
+            ],
+        )
+        self.record_video_dir = config.get("record_video_dir")
+        self.record_video_size = config.get("record_video_size", {"width": 1280, "height": 720})
+        self.video_path: Optional[str] = None
         Path(self.screenshot_dir).mkdir(parents=True, exist_ok=True)
         self._playwright = None
         self._browser = None
         self._context = None
         self._page: Optional[Page] = None
-        self._record_saved_path: Optional[str] = None
 
     # ------------------------------------------------------------------
     # BaseWebBridge 接口
@@ -121,23 +126,64 @@ class PlaywrightWebBridgeAdapter(BaseWebBridge):
             )
 
             context_options: Dict[str, Any] = {}
-            if self.video_dir:
-                video_dir = Path(self.video_dir).resolve()
-                video_dir.mkdir(parents=True, exist_ok=True)
-                context_options["record_video_dir"] = str(video_dir)
-                context_options["record_video_size"] = self.video_size
-
-            if self.record_frontend:
-                record_dir = Path(self.record_dir).resolve()
-                record_dir.mkdir(parents=True, exist_ok=True)
-                context_options["record_video_dir"] = str(record_dir)
-                context_options["record_video_size"] = self.record_size
-                print(f"[PlaywrightWebBridge] 前端录屏已启用，保存目录: {record_dir}")
+            if self.record_video_dir:
+                Path(self.record_video_dir).mkdir(parents=True, exist_ok=True)
+                context_options["record_video_dir"] = self.record_video_dir
+                context_options["record_video_size"] = self.record_video_size
+                self._log_step(f"启用 Playwright 内置录屏，保存目录: {self.record_video_dir}")
 
             self._context = self._browser.new_context(**context_options)
+            # 监听新页面（训练开始后平台可能弹出新标签页）
+            self._context.on("page", self._on_new_page)
             self.session_id = f"playwright-{int(time.time())}"
         except Exception as e:
             raise WebBridgeError(f"Playwright 启动浏览器失败: {e}")
+
+    def _on_new_page(self, page: Page) -> None:
+        """新页面打开时的回调，仅记录日志，由业务方决定何时切换。"""
+        try:
+            title = page.title()
+        except Exception:
+            title = ""
+        self._log_step(f"检测到新页面: {page.url} (title={title!r})")
+
+    def switch_to_training_page(self) -> None:
+        """点击开始训练后，如果平台弹出了训练详情新标签页，切换录制目标到新页面。
+
+        这会关闭旧页面，避免录屏停留在原页面。
+        """
+        if not self._context:
+            return
+        pages = self._context.pages
+        if len(pages) <= 1:
+            return
+
+        target: Optional[Page] = None
+        # 优先找 URL 含 train_detail 或标题含训练详情的页面
+        for p in pages:
+            try:
+                url = p.url
+                title = p.title()
+                if "train_detail" in url or "训练详情" in title or "AI 训练平台" in title:
+                    target = p
+                    break
+            except Exception:
+                pass
+
+        # 找不到明确标识就切到最后一个打开的新页面
+        if target is None:
+            target = pages[-1]
+
+        if target and target != self._page:
+            self._log_step(f"切换录制目标到训练详情页: {target.url}")
+            old_page = self._page
+            self._page = target
+            # 关闭旧页面，避免它继续生成额外的录屏文件
+            if old_page and not old_page.is_closed():
+                try:
+                    old_page.close()
+                except Exception:
+                    pass
 
     def navigate(self, url: str) -> WebBridgeResult:
         if not self._context:
@@ -210,14 +256,20 @@ class PlaywrightWebBridgeAdapter(BaseWebBridge):
             raise WebBridgeError(f"获取页面状态失败: {e}")
 
     def close(self) -> None:
-        video = None
         try:
             if self._page:
                 try:
                     video = self._page.video
                 except Exception:
-                    pass
+                    video = None
                 self._page.close()
+                # 等 page 关闭后，Playwright 才会 finalize 视频文件
+                if video:
+                    try:
+                        self.video_path = video.path()
+                        self._log_step(f"Playwright 录屏文件已生成: {self.video_path}")
+                    except Exception:
+                        pass
                 self._page = None
             if self._context:
                 self._context.close()
@@ -231,59 +283,7 @@ class PlaywrightWebBridgeAdapter(BaseWebBridge):
         except Exception as e:
             print(f"关闭 Playwright 时出错: {e}")
 
-        # Playwright 的视频路径要在页面/上下文关闭后才可用。
-        # 重命名则必须在 context / browser / playwright 全部关闭后进行，
-        # 否则 Windows 上 Playwright 仍持有视频文件句柄，会导致 WinError 32。
-        video_path = None
-        if video:
-            try:
-                video_path = video.path()
-            except Exception:
-                pass
-
-        if video_path and self.record_frontend:
-            self._save_recording(video_path)
-        elif video_path:
-            print(f"[PlaywrightWebBridge] 页面录制视频: {video_path}")
-
         self.session_id = None
-
-    def _save_recording(self, video_path: str) -> Optional[str]:
-        """将 Playwright 自动命名的录屏文件重命名为 模型+训练结束时间 并保存到 record 目录。"""
-        if not self.record_dir:
-            return None
-        try:
-            import shutil
-
-            src = Path(video_path)
-            # Playwright 视频在 context 关闭后通常立即可用，但在 Windows 上偶尔需要多等一会儿
-            for _ in range(50):
-                if src.exists() and src.stat().st_size > 0:
-                    break
-                time.sleep(0.1)
-            if not src.exists():
-                return None
-
-            timestamp = time.strftime("%Y%m%d_%H%M%S")
-            name = self.record_name or "autotrain"
-            safe_name = re.sub(r'[\\/:*?"<>|]+', "_", str(name)).strip() or "autotrain"
-            filename = f"{safe_name}_{timestamp}.webm"
-            target = Path(self.record_dir).resolve() / filename
-            target.parent.mkdir(parents=True, exist_ok=True)
-
-            try:
-                src.rename(target)
-            except OSError:
-                # Windows 文件仍被占用时使用复制+删除兜底
-                shutil.copy2(str(src), str(target))
-                src.unlink()
-
-            self._record_saved_path = str(target)
-            print(f"[PlaywrightWebBridge] 前端录屏已保存: {target}")
-            return self._record_saved_path
-        except Exception as e:
-            print(f"[PlaywrightWebBridge] 保存录屏失败: {e}")
-            return None
 
     # ------------------------------------------------------------------
     # 完整训练流程：数据分析 → 数据增强 → 训练参数 → 开始训练
@@ -383,6 +383,10 @@ class PlaywrightWebBridgeAdapter(BaseWebBridge):
         self._sleep_step(2.0)
         self._handle_confirm_dialog()
         self._sleep_step(1.0)
+
+        # 平台可能会弹出新标签页展示训练详情，切换录制目标到新页面
+        self._sleep_step(2.0)
+        self.switch_to_training_page()
 
         return WebBridgeResult(success=True, message="完整训练流程已执行完毕")
 

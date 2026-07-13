@@ -33,6 +33,8 @@ class ConfigBuilder:
         full_train: bool = False,
         adjustments: Optional[Dict[str, Any]] = None,
         llm_client: Optional[LLMClient] = None,
+        record: bool = True,
+        record_dir: str = "./record",
     ):
         self.intent = intent
         self.match = match
@@ -41,6 +43,8 @@ class ConfigBuilder:
         self.full_train = full_train
         self.adjustments = adjustments or {}
         self.llm = llm_client
+        self.record = record
+        self.record_dir = record_dir
 
     def build(self) -> Dict[str, Any]:
         """生成完整配置。"""
@@ -71,6 +75,10 @@ class ConfigBuilder:
             cfg["webbridge"] = dict(DEFAULT_WEBBRIDGE)
         if self.adapter:
             cfg["webbridge"]["adapter"] = self.adapter
+        if self.record:
+            cfg["webbridge"]["record_video_dir"] = self.record_dir
+        else:
+            cfg["webbridge"].pop("record_video_dir", None)
 
         # dataset 区块：保留 auto_detect，同时可记录匹配到的类别
         dataset_cfg = cfg.setdefault("dataset", {})
