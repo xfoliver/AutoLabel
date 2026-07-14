@@ -19,7 +19,7 @@ import base64
 import logging
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Callable, Dict, List, Optional, Union
 
 import requests
 from tqdm import tqdm
@@ -80,6 +80,7 @@ class InferenceClient:
 
         url = f"{self.base_url}/load_model"
         payload = {"model_path": model_path_str}
+        last_error: Optional[Exception] = None
 
         for attempt in range(self.max_retries + 1):
             try:
@@ -95,7 +96,21 @@ class InferenceClient:
                 self._loaded_model_path = model_path_str
                 logger.info("模型加载成功: %s", model_path.name)
                 return result
+            except InferenceError:
+                raise
+            except requests.exceptions.ConnectionError as e:
+                last_error = e
+                logger.warning(
+                    "无法连接推理服务 (%s/%s) %s: %s",
+                    attempt + 1,
+                    self.max_retries + 1,
+                    self.base_url,
+                    e,
+                )
+                if attempt < self.max_retries:
+                    time.sleep(self.retry_delay * (attempt + 1))
             except requests.exceptions.RequestException as e:
+                last_error = e
                 logger.warning(
                     "模型加载请求失败 (%s/%s): %s - %s",
                     attempt + 1,
@@ -106,7 +121,17 @@ class InferenceClient:
                 if attempt < self.max_retries:
                     time.sleep(self.retry_delay * (attempt + 1))
 
-        raise InferenceError(f"加载模型失败 [{model_path.name}]")
+        # 区分「服务没开」和「服务开了但加载失败」
+        if isinstance(last_error, requests.exceptions.ConnectionError):
+            raise InferenceError(
+                f"无法连接推理服务 {self.base_url}，加载模型失败 [{model_path.name}]。"
+                f"请先启动 DLCV Test（推理后端，默认监听 127.0.0.1:9890），"
+                f"确认模型文件存在后再重试。原始错误: {last_error}"
+            )
+        raise InferenceError(
+            f"加载模型失败 [{model_path.name}]，推理服务: {self.base_url}，"
+            f"最后错误: {last_error}"
+        )
 
     def infer(
         self,
@@ -185,6 +210,7 @@ class InferenceClient:
         image_dir: Union[str, Path],
         image_paths: Optional[List[Union[str, Path]]] = None,
         progress: Optional[bool] = None,
+        on_progress: Optional[Callable[[int, int, str, str], None]] = None,
     ) -> List[Dict[str, Any]]:
         """
         对文件夹或指定图片列表批量推理。
@@ -193,7 +219,9 @@ class InferenceClient:
             model_path: .dvp 模型文件路径。
             image_dir: 图片所在目录（当 image_paths 为 None 时遍历该目录）。
             image_paths: 可选，指定具体的图片路径列表。
-            progress: 是否在终端显示进度条，默认 True。
+            progress: 是否在终端显示进度条，默认跟随 self.progress。
+            on_progress: 可选回调 (current, total, image_name, model_name)，
+                用于 GUI 等场景把百分比写到日志区；与 tqdm 可同时存在。
 
         Returns:
             每张图片的推理结果列表，失败条目也会包含 error 字段。
@@ -222,7 +250,8 @@ class InferenceClient:
 
         # 进度显示策略：
         # 1. 默认用 tqdm 进度条；2. 非交互环境或显式关闭时，用 logger 定期报告进度
-        use_tqdm = show_progress and total > 0
+        # 3. 若提供 on_progress，则始终回调（供 PyQt 日志区显示百分比）
+        use_tqdm = show_progress and total > 0 and on_progress is None
         if use_tqdm:
             try:
                 iterator = tqdm(
@@ -237,10 +266,34 @@ class InferenceClient:
             except Exception:
                 use_tqdm = False
 
-        report_interval = max(1, total // 10) if total > 0 else 1
+        # 有回调时更密一点（约每 2% 或每张），无回调时约每 10%
+        if on_progress is not None:
+            report_interval = max(1, total // 50) if total > 0 else 1
+        else:
+            report_interval = max(1, total // 10) if total > 0 else 1
+
+        if total == 0:
+            logger.warning("图片目录为空，跳过推理: %s", image_dir if image_paths is None else model_path)
+        else:
+            logger.info("开始批量推理: 模型=%s, 共 %s 张图", model_path.name, total)
+
         for idx, img_path in iterator:
-            if not use_tqdm and idx % report_interval == 0:
-                logger.info("推理进度: %s/%s - %s", idx, total, img_path.name)
+            should_log = (idx == 1) or (idx == total) or (idx % report_interval == 0)
+            if on_progress is not None and should_log:
+                try:
+                    on_progress(idx, total, img_path.name, model_path.name)
+                except Exception:
+                    pass
+            if not use_tqdm and should_log:
+                pct = int(idx * 100 / total) if total else 100
+                logger.info(
+                    "推理进度 [%s]: %s/%s (%s%%) - %s",
+                    model_path.name,
+                    idx,
+                    total,
+                    pct,
+                    img_path.name,
+                )
             else:
                 logger.debug("推理进度: %s/%s - %s", idx, total, img_path.name)
             try:
@@ -261,6 +314,10 @@ class InferenceClient:
                     "success": False,
                     "error": str(e),
                 })
+
+        if total > 0:
+            ok = sum(1 for r in results if r.get("success"))
+            logger.info("批量推理结束: %s 成功 %s/%s", model_path.name, ok, total)
 
         return results
 

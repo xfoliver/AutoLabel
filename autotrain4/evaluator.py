@@ -10,7 +10,7 @@ import logging
 from dataclasses import dataclass, field
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 from .inference_client import InferenceClient
 
@@ -146,6 +146,7 @@ class InferenceEvaluator:
         new_model_path: Union[str, Path],
         image_dir: Union[str, Path],
         baseline_model_path: Optional[Union[str, Path]] = None,
+        on_progress: Optional[Callable[[int, int, str, str], None]] = None,
     ) -> ComparisonReport:
         """
         评估新模型推理结果，并可选择与基准模型对比。
@@ -154,6 +155,7 @@ class InferenceEvaluator:
             new_model_path: 新训练好的 .dvp 模型路径。
             image_dir: 测试图片目录。
             baseline_model_path: 可选，基准模型 .dvp 路径。
+            on_progress: 可选进度回调 (current, total, image_name, model_name)。
 
         Returns:
             ComparisonReport 对象。
@@ -168,10 +170,22 @@ class InferenceEvaluator:
             logger.info("基准模型: %s", baseline_model_path)
         logger.info("测试图片目录: %s", image_dir)
 
-        new_results = self.client.infer_batch(new_model_path, image_dir, progress=self.progress)
+        # 有 GUI 回调时关掉 tqdm，改由回调/日志输出百分比，避免进度只出现在终端
+        use_tqdm = self.progress and on_progress is None
+        new_results = self.client.infer_batch(
+            new_model_path,
+            image_dir,
+            progress=use_tqdm,
+            on_progress=on_progress,
+        )
         baseline_results: Optional[List[Dict[str, Any]]] = None
         if baseline_model_path:
-            baseline_results = self.client.infer_batch(baseline_model_path, image_dir, progress=self.progress)
+            baseline_results = self.client.infer_batch(
+                baseline_model_path,
+                image_dir,
+                progress=use_tqdm,
+                on_progress=on_progress,
+            )
 
         return self._build_report(
             new_results=new_results,
