@@ -369,10 +369,31 @@ class AutoTrain4Orchestrator:
         logger.info("用户输入与训练/测试无关，进入通用对话模式")
 
         system_msg = (
-            "你是 DLCV AI 训练平台的智能助手。用户当前输入看起来不是想启动训练或测试任务，"
-            "请用友好、简洁的中文回答用户的问题。如果用户是在闲聊，可以正常回应；"
-            "如果用户其实想问训练相关的问题，也可以简要介绍本平台的功能。"
+            "你是 AutoTrain 4.0 训练自动化系统的智能助手。"
+            "请根据提供的上下文，友好、简洁地回答用户的问题；不要编造不存在的信息。"
         )
+
+        # 查找最近的几个 run_dir，作为真实上下文
+        recent_runs = self._find_recent_run_dirs(max_count=3)
+        context_lines = [
+            "本项目的训练文件结构如下：",
+            "每次训练会在 <项目文件夹>/work/<任务类型-时间戳>/ 目录下生成一个 run 目录。",
+            "例如：AI训练平台测试/1-OCR/work/1-OCR-20260716_150004/",
+            "run 目录下通常包含：screen_recording.mp4（录屏）、screenshots/（截图）、config.json（配置）、",
+            "stdout.log/stderr.log/train.log（日志）、*.dva/*.dvp（模型文件）、checkpoints/（检查点）。",
+            "",
+            "最近的训练运行目录：",
+        ]
+        if recent_runs:
+            for run_dir in recent_runs:
+                context_lines.append(f"- {run_dir}")
+                for name in ("screen_recording.mp4", "config.json"):
+                    path = run_dir / name
+                    marker = "✓" if path.exists() else "✗"
+                    context_lines.append(f"  {marker} {name}")
+        else:
+            context_lines.append("- 暂无训练记录")
+        run_context = "\n".join(context_lines)
 
         messages = self._load_chat_history()
         # 确保 system 消息在最前
@@ -381,7 +402,8 @@ class AutoTrain4Orchestrator:
         # 更新 system 消息内容（如果后续有调整）
         messages[0] = {"role": "system", "content": system_msg}
 
-        messages.append({"role": "user", "content": self.args.prompt})
+        user_content = f"{self.args.prompt}\n\n{run_context}"
+        messages.append({"role": "user", "content": user_content})
 
         try:
             answer = self.llm.chat(messages)
@@ -406,6 +428,23 @@ class AutoTrain4Orchestrator:
 
         task_type = self.intent.task_type if self.intent else ""
         return find_latest_config(task_type)
+
+    def _find_recent_run_dirs(self, max_count: int = 3) -> List[Path]:
+        """查找扫描目录下最近的几个 run_dir（按修改时间）。"""
+        run_dirs: List[Path] = []
+        if not self.scan_dir.exists():
+            return run_dirs
+        for project_dir in self.scan_dir.iterdir():
+            if not project_dir.is_dir():
+                continue
+            work_dir = project_dir / "work"
+            if not work_dir.exists():
+                continue
+            for run_dir in work_dir.iterdir():
+                if run_dir.is_dir():
+                    run_dirs.append(run_dir)
+        run_dirs.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+        return run_dirs[:max_count]
 
     def _effective_baseline_model(self, task_type: str) -> Optional[str]:
         """综合命令行参数、意图中的路径、自动定位，得到最终 baseline 模型路径。"""

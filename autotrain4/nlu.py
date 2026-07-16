@@ -84,7 +84,7 @@ class IntentParser:
 
         logger.info("第一层 LLM：解析用户意图")
         parsed_list = self.llm.extract_intent(prompt)
-        if not parsed_list:
+        if parsed_list is None:
             raise RuntimeError("LLM 意图解析失败，无法继续（已取消规则兜底）")
 
         top_level_needs_training = True
@@ -94,6 +94,44 @@ class IntentParser:
 
         if not isinstance(parsed_list, list):
             raise ValueError(f"LLM 返回的任务格式不正确: {parsed_list}")
+
+        # LLM 返回空列表，说明没有训练任务，进入通用对话
+        if not parsed_list:
+            logger.info("LLM 返回空任务列表，进入通用对话模式")
+            return [
+                TrainIntent(
+                    task_type="",
+                    categories=[],
+                    dataset_hint="",
+                    mode="chat",
+                    raw_prompt=prompt,
+                    needs_training=False,
+                    data_analysis=False,
+                    mentions_augmentation=False,
+                    data_augmentation=[],
+                    baseline_model=None,
+                    wants_baseline=False,
+                )
+            ]
+
+        # 用户只是闲聊/提问，没有训练任务
+        if not top_level_needs_training:
+            logger.info("用户输入与训练无关，进入通用对话模式")
+            return [
+                TrainIntent(
+                    task_type="",
+                    categories=[],
+                    dataset_hint="",
+                    mode="chat",
+                    raw_prompt=prompt,
+                    needs_training=False,
+                    data_analysis=False,
+                    mentions_augmentation=False,
+                    data_augmentation=[],
+                    baseline_model=None,
+                    wants_baseline=False,
+                )
+            ]
 
         intents: List[TrainIntent] = []
         for idx, parsed in enumerate(parsed_list):
