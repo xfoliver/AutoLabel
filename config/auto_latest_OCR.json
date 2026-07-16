@@ -7,14 +7,14 @@
     "backend_ready_interval": 2.0
   },
   "project": {
-    "name": "1-OCR-20260716_131706",
+    "name": "1-OCR-20260716_151550",
     "task_type": "OCR",
     "description": "自动化 OCR 训练项目",
     "dataset_dir": "C:\\Users\\Admin\\kimi_gui_automation\\AI训练平台测试\\1-OCR\\训练集",
-    "work_dir": "C:\\Users\\Admin\\kimi_gui_automation\\AI训练平台测试\\1-OCR\\work\\1-OCR-20260716_131703",
-    "dva_file": "C:\\Users\\Admin\\kimi_gui_automation\\AI训练平台测试\\1-OCR\\work\\1-OCR-20260716_131703\\1-OCR-20260716_131706.dva",
-    "run_id": "1-OCR-20260716_131703",
-    "run_dir": "C:\\Users\\Admin\\kimi_gui_automation\\AI训练平台测试\\1-OCR\\work\\1-OCR-20260716_131703",
+    "work_dir": "C:\\Users\\Admin\\kimi_gui_automation\\AI训练平台测试\\1-OCR\\work\\1-OCR-20260716_151545",
+    "dva_file": "C:\\Users\\Admin\\kimi_gui_automation\\AI训练平台测试\\1-OCR\\work\\1-OCR-20260716_151545\\1-OCR-20260716_151550.dva",
+    "run_id": "1-OCR-20260716_151545",
+    "run_dir": "C:\\Users\\Admin\\kimi_gui_automation\\AI训练平台测试\\1-OCR\\work\\1-OCR-20260716_151545",
     "original_dataset_dir": "C:\\Users\\Admin\\kimi_gui_automation\\AI训练平台测试\\1-OCR\\训练集"
   },
   "training": {
@@ -26,7 +26,7 @@
       "train_set_val": 80,
       "val_set_val": 20,
       "copy_times": 1,
-      "max_epochs": 20,
+      "max_epochs": 12,
       "val_interval": 1,
       "save_error_data": false,
       "weight_decay": 0.0001,
@@ -40,8 +40,8 @@
         "width": 1280,
         "height": 48
       },
-      "batch_size": 16,
-      "lr": 0.0005,
+      "batch_size": 8,
+      "lr": 0.0001,
       "enable_fp16": false,
       "train_num_workers": 1,
       "data_augmentation": [
@@ -58,11 +58,13 @@
     "auto_detect": true
   },
   "webbridge": {
-    "record_video_dir": "C:\\Users\\Admin\\kimi_gui_automation\\AI训练平台测试\\1-OCR\\work\\1-OCR-20260716_131703",
-    "screenshot_dir": "C:\\Users\\Admin\\kimi_gui_automation\\AI训练平台测试\\1-OCR\\work\\1-OCR-20260716_131703\\screenshots"
+    "record_video_dir": "C:\\Users\\Admin\\kimi_gui_automation\\AI训练平台测试\\1-OCR\\work\\1-OCR-20260716_151545",
+    "screenshot_dir": "C:\\Users\\Admin\\kimi_gui_automation\\AI训练平台测试\\1-OCR\\work\\1-OCR-20260716_151545\\screenshots"
   },
   "ui_flow": {
     "data_analysis": true,
     "data_augmentation": []
-  }
+  },
+  "project_name": "OCR_Training_NoAug",
+  "description": "基于OCR数据集训练OCR模型，不启用数据增强。注意：用户原始需求包含cls和det模型，当前仅匹配到OCR数据集，建议确认是否需要额外数据集。"
 }

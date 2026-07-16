@@ -46,7 +46,7 @@ from autotrain4.evaluator import InferenceEvaluator
 from autotrain4.inference_client import InferenceClient
 from autotrain4.judge import RequirementJudge
 from autotrain4.llm_client import LLMClient
-from autotrain4.nlu import IntentParser
+from autotrain4.nlu import IntentParser, TrainIntent
 from autotrain4.resolver import DatasetResolver
 from autotrain4.run_context import RunContext
 
@@ -85,7 +85,8 @@ class AutoTrain4Orchestrator:
         if getattr(args, "clear_chat_history", False):
             self._clear_chat_history()
         self.llm = self._build_llm_client()
-        self.intent: Optional[Any] = None
+        self.intents: List[TrainIntent] = []
+        self.intent: Optional[TrainIntent] = None  # 当前/最后一个任务意图
         self.match: Optional[Any] = None
         self.config_path: Optional[Path] = None
         self.run_ctx: Optional[RunContext] = None
@@ -96,26 +97,65 @@ class AutoTrain4Orchestrator:
         return LLMClient()
 
     def run(self) -> int:
-        """执行完整 4.0 流程。"""
+        """执行完整 4.0 流程，支持单任务或多任务顺序执行。"""
         logger.info("========== AUTO TRAIN 4.0 START ==========")
         logger.info("用户输入: %s", self.args.prompt)
 
-        # 1. 解析意图
+        # 1. 解析意图（可能返回多个任务）
         parser = IntentParser(self.llm)
-        self.intent = parser.parse(self.args.prompt)
-        logger.info("解析意图: %s", self.intent.to_dict())
+        self.intents = parser.parse(self.args.prompt)
+        logger.info("解析到 %d 个任务", len(self.intents))
+        for idx, intent in enumerate(self.intents, 1):
+            logger.info("任务 %d/%d: %s", idx, len(self.intents), intent.to_dict())
 
-        # 2. 测试模式：直接对最新模型 + 训练集跑推理
-        if self.args.test_latest or self.intent.mode == "test":
-            return self._run_test_latest()
+        # 2. 单任务特殊模式：测试 / 通用对话
+        if len(self.intents) == 1:
+            self.intent = self.intents[0]
+            if self.args.test_latest or self.intent.mode == "test":
+                return self._run_test_latest()
+            if not self.intent.needs_training:
+                return self._run_general_chat()
 
-        # 3. 非训练意图：进入通用对话兜底
-        if not self.intent.needs_training:
-            return self._run_general_chat()
+        # 3. 顺序执行每个训练任务；单个任务失败不影响后续任务
+        total = len(self.intents)
+        failed_tasks: List[str] = []
+        for idx, intent in enumerate(self.intents, 1):
+            self.intent = intent
+            print(f"[TASK {idx}/{total}] {intent.task_type}", flush=True)
+            logger.info("========== 开始执行任务 %d/%d: %s ==========", idx, total, intent.task_type)
+            try:
+                ret = self._run_single_training(intent, task_index=idx, task_total=total)
+                if ret != 0:
+                    logger.error("任务 %d/%d 执行失败，继续执行后续任务", idx, total)
+                    failed_tasks.append(intent.task_type)
+            except Exception as e:
+                logger.exception("任务 %d/%d 发生异常，继续执行后续任务: %s", idx, total, e)
+                failed_tasks.append(intent.task_type)
+                if self.run_ctx is not None:
+                    self.run_ctx.save_exception(exc=e)
 
-        # 4. 语义匹配数据集（或被 --folder 覆盖）
-        self.match = self._resolve_match()
-        logger.info("匹配数据集: %s", self.match.to_dict())
+        if failed_tasks:
+            logger.error("========== 部分任务执行失败 ==========")
+            logger.error("失败任务: %s", failed_tasks)
+            print(f"[WARNING] 以下任务失败: {', '.join(failed_tasks)}", flush=True)
+            return 1
+
+        logger.info("========== 所有任务执行完成 ==========")
+        return 0
+
+    def _run_single_training(
+        self,
+        intent: TrainIntent,
+        task_index: int = 1,
+        task_total: int = 1,
+    ) -> int:
+        """执行单个训练任务。"""
+        self.intent = intent
+
+        # 4. 语义匹配数据集（或被 --folder 覆盖；多任务模式下 --folder 仅作用于第一个任务）
+        use_folder = self.args.folder if task_index == 1 else None
+        self.match = self._resolve_match(intent, folder_name=use_folder)
+        logger.info("任务 %d/%d 匹配数据集: %s", task_index, task_total, self.match.to_dict())
 
         # 5. 创建本次 run 的归档上下文
         self.run_ctx = RunContext(
@@ -126,18 +166,21 @@ class AutoTrain4Orchestrator:
         self.run_ctx.save_runtime_info({
             "backend_url": self.args.inference_api_url,
             "frontend_url": self.config.get("webbridge", {}).get("frontend_url") if hasattr(self, "config") else None,
+            "task_index": task_index,
+            "task_total": task_total,
         })
-        logger.info("本次训练归档目录: %s", self.run_ctx.run_dir)
+        logger.info("任务 %d/%d 归档目录: %s", task_index, task_total, self.run_ctx.run_dir)
         print(f"[RUN_DIR] {self.run_ctx.run_dir}", flush=True)
 
         # 6. 第三层：DeepSeek 需求分析与判断
         judge = RequirementJudge()
-        judge_result = judge.judge(self.intent, self.match)
-        logger.info("DeepSeek 判断: %s", judge_result.to_dict())
+        task_context = self._build_task_context(intent)
+        judge_result = judge.judge(intent, self.match, task_context=task_context)
+        logger.info("任务 %d/%d DeepSeek 判断: %s", task_index, task_total, judge_result.to_dict())
 
         # 7. 生成配置
         builder = ConfigBuilder(
-            self.intent,
+            intent,
             self.match,
             project_root=self.project_root,
             adapter=self.args.adapter,
@@ -152,27 +195,47 @@ class AutoTrain4Orchestrator:
         self.run_ctx.save_config(builder.build())
 
         if self.args.generate_config_only:
-            logger.info("--generate-config-only: 已生成配置，不启动训练")
+            logger.info("任务 %d/%d --generate-config-only: 已生成配置，不启动训练", task_index, task_total)
             logger.info("配置文件: %s", self.config_path)
             return 0
 
         # 8. 调用 auto_train2.0.py
-        return self._run_auto_train2()
+        return self._run_auto_train2(task_index=task_index, task_total=task_total)
 
-    def _resolve_match(self):
+    @staticmethod
+    def _build_task_context(intent: TrainIntent) -> str:
+        """为单个任务生成简洁描述，用于 DeepSeek 判断时避免受整句中其他任务干扰。"""
+        parts = [f"训练一个 {intent.task_type} 模型"]
+        if intent.categories:
+            parts.append(f"类别：{', '.join(intent.categories)}")
+        if intent.data_augmentation:
+            parts.append(f"启用数据增强：{', '.join(intent.data_augmentation)}")
+        else:
+            parts.append("不启用数据增强")
+        return "，".join(parts)
+
+    def _resolve_match(
+        self,
+        intent: TrainIntent,
+        folder_name: Optional[str] = None,
+    ):
         """解析数据集匹配结果。"""
         resolver = DatasetResolver(self.scan_dir, llm_client=self.llm)
-        if self.args.folder:
-            folder = self.scan_dir / self.args.folder
+        if folder_name:
+            folder = self.scan_dir / folder_name
             if not folder.exists():
                 raise AutoTrain4Error(f"指定文件夹不存在: {folder}")
-            return resolver._score_folder(folder, self.intent)
+            return resolver._score_folder(folder, intent)
         return resolver.resolve(
-            self.intent,
+            intent,
             auto_threshold=self.args.auto_threshold,
         )
 
-    def _run_auto_train2(self) -> int:
+    def _run_auto_train2(
+        self,
+        task_index: int = 1,
+        task_total: int = 1,
+    ) -> int:
         """调用 auto_train2.0.py 执行训练。"""
         cmd = [
             sys.executable,
@@ -191,7 +254,7 @@ class AutoTrain4Orchestrator:
         if self.args.reuse:
             cmd.append("--reuse")
 
-        logger.info("========== AUTO TRAIN 4.0 -> 2.0 ==========")
+        logger.info("========== AUTO TRAIN 4.0 -> 2.0 (任务 %d/%d) ==========", task_index, task_total)
         logger.info("启动子进程: %s", " ".join(cmd))
 
         result = subprocess.run(cmd, check=False)

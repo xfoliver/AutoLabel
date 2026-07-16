@@ -7,12 +7,15 @@
     "backend_ready_interval": 2.0
   },
   "project": {
-    "name": "3-DET-20260713_165115",
+    "name": "3-DET-20260716_151906",
     "task_type": "目标检测",
     "description": "自动化目标检测训练项目",
     "dataset_dir": "C:\\Users\\Admin\\kimi_gui_automation\\AI训练平台测试\\3-DET\\训练集",
-    "work_dir": "C:\\Users\\Admin\\kimi_gui_automation\\AI训练平台测试\\3-DET\\work",
-    "dva_file": "C:\\Users\\Admin\\kimi_gui_automation\\AI训练平台测试\\3-DET\\3-DET-20260713_165115.dva"
+    "work_dir": "C:\\Users\\Admin\\kimi_gui_automation\\AI训练平台测试\\3-DET\\work\\3-DET-20260716_151904",
+    "dva_file": "C:\\Users\\Admin\\kimi_gui_automation\\AI训练平台测试\\3-DET\\work\\3-DET-20260716_151904\\3-DET-20260716_151906.dva",
+    "run_id": "3-DET-20260716_151904",
+    "run_dir": "C:\\Users\\Admin\\kimi_gui_automation\\AI训练平台测试\\3-DET\\work\\3-DET-20260716_151904",
+    "original_dataset_dir": "C:\\Users\\Admin\\kimi_gui_automation\\AI训练平台测试\\3-DET\\训练集"
   },
   "training": {
     "auto_start": true,
@@ -37,7 +40,7 @@
         "width": 640,
         "height": 640
       },
-      "batch_size": 8,
+      "batch_size": 2,
       "lr": 0.001,
       "enable_fp16": true,
       "train_num_workers": 2,
@@ -58,25 +61,8 @@
     "auto_detect": true
   },
   "webbridge": {
-    "enabled": true,
-    "adapter": "playwright",
-    "frontend_url": "http://localhost:8843",
-    "timeout": 120,
-    "frontend_ready_timeout": 60,
-    "frontend_ready_interval": 1,
-    "screenshot_dir": "./webbridge_screenshots",
-    "headless": false,
-    "browser": "chromium",
-    "slow_mo": 300,
-    "step_delay": 1.0,
-    "wait_loading_done": false,
-    "post_click_delay": 2.0,
-    "keep_browser_open": true,
-    "record_video_dir": "./record",
-    "record_video_size": {
-      "width": 1280,
-      "height": 720
-    }
+    "record_video_dir": "C:\\Users\\Admin\\kimi_gui_automation\\AI训练平台测试\\3-DET\\work\\3-DET-20260716_151904",
+    "screenshot_dir": "C:\\Users\\Admin\\kimi_gui_automation\\AI训练平台测试\\3-DET\\work\\3-DET-20260716_151904\\screenshots"
   },
   "ui_flow": {
     "data_analysis": true,

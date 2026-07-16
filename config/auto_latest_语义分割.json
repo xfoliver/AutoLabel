@@ -7,12 +7,15 @@
     "backend_ready_interval": 2.0
   },
   "project": {
-    "name": "6-SSEG-20260710_152407",
+    "name": "6-SSEG-20260716_152250",
     "task_type": "语义分割",
     "description": "自动化语义分割训练项目",
     "dataset_dir": "C:\\Users\\Admin\\kimi_gui_automation\\AI训练平台测试\\6-SSEG\\训练集",
-    "work_dir": "C:\\Users\\Admin\\kimi_gui_automation\\AI训练平台测试\\6-SSEG\\work",
-    "dva_file": "C:\\Users\\Admin\\kimi_gui_automation\\AI训练平台测试\\6-SSEG\\6-SSEG-20260710_152407.dva"
+    "work_dir": "C:\\Users\\Admin\\kimi_gui_automation\\AI训练平台测试\\6-SSEG\\work\\6-SSEG-20260716_152245",
+    "dva_file": "C:\\Users\\Admin\\kimi_gui_automation\\AI训练平台测试\\6-SSEG\\work\\6-SSEG-20260716_152245\\6-SSEG-20260716_152250.dva",
+    "run_id": "6-SSEG-20260716_152245",
+    "run_dir": "C:\\Users\\Admin\\kimi_gui_automation\\AI训练平台测试\\6-SSEG\\work\\6-SSEG-20260716_152245",
+    "original_dataset_dir": "C:\\Users\\Admin\\kimi_gui_automation\\AI训练平台测试\\6-SSEG\\训练集"
   },
   "training": {
     "auto_start": true,
@@ -62,30 +65,27 @@
     "matched_user_categories": {}
   },
   "webbridge": {
-    "enabled": true,
-    "adapter": "playwright",
-    "frontend_url": "http://localhost:8843",
-    "timeout": 120,
-    "frontend_ready_timeout": 60,
-    "frontend_ready_interval": 1,
-    "screenshot_dir": "./webbridge_screenshots",
-    "headless": false,
-    "browser": "chromium",
-    "slow_mo": 300,
-    "step_delay": 1.0,
-    "wait_loading_done": false,
-    "post_click_delay": 2.0,
-    "keep_browser_open": true
+    "record_video_dir": "C:\\Users\\Admin\\kimi_gui_automation\\AI训练平台测试\\6-SSEG\\work\\6-SSEG-20260716_152245",
+    "screenshot_dir": "C:\\Users\\Admin\\kimi_gui_automation\\AI训练平台测试\\6-SSEG\\work\\6-SSEG-20260716_152245\\screenshots"
   },
   "ui_flow": {
     "data_analysis": true,
-    "data_augmentation": []
+    "data_augmentation": [
+      "调整图像大小",
+      "随机比例缩放",
+      "随机翻转",
+      "随机固定角度旋转",
+      "随机裁剪",
+      "随机调整亮度",
+      "随机调整对比度",
+      "随机JPG编码"
+    ]
   },
-  "project_name": "语义分割训练项目",
-  "description": "基于用户需求自动创建的语义分割训练任务，使用6-SSEG数据集。",
+  "project_name": "语义分割训练_增强全开",
+  "description": "基于6-SSEG数据集训练语义分割模型，启用全部数据增强（调整图像大小、随机比例缩放、随机翻转、随机固定角度旋转、随机裁剪、随机调整亮度、随机调整对比度、随机JPG编码）。",
   "hyperparameters": {
-    "learning_rate": 0.001,
+    "epochs": 100,
     "batch_size": 8,
-    "epochs": 50
+    "learning_rate": 0.001
   }
 }

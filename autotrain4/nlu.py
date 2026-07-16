@@ -73,8 +73,8 @@ class IntentParser:
     def __init__(self, llm_client: Optional[LLMClient] = None):
         self.llm = llm_client or LLMClient()
 
-    def parse(self, prompt: str) -> TrainIntent:
-        """解析用户输入为训练意图，完全由 LLM 负责。"""
+    def parse(self, prompt: str) -> List[TrainIntent]:
+        """解析用户输入为一个或多个训练意图，完全由 LLM 负责。"""
         prompt = prompt.strip()
         if not prompt:
             raise ValueError("输入不能为空")
@@ -83,53 +83,71 @@ class IntentParser:
             raise RuntimeError("LLM 未配置，无法解析自然语言意图（已取消规则兜底）")
 
         logger.info("第一层 LLM：解析用户意图")
-        parsed = self.llm.extract_intent(prompt)
-        if not parsed:
+        parsed_list = self.llm.extract_intent(prompt)
+        if not parsed_list:
             raise RuntimeError("LLM 意图解析失败，无法继续（已取消规则兜底）")
 
-        task_type = self._canonicalize_task_type(parsed.get("task_type", ""))
-        mode = self._canonicalize_mode(parsed.get("mode", "train"), prompt)
-        categories = self._canonicalize_categories(parsed.get("categories", []))
-        dataset_hint = str(parsed.get("dataset_hint", "")).strip()
-        baseline_model = self._extract_baseline_model(parsed.get("baseline_model"), prompt)
-        wants_baseline = self._wants_baseline_comparison(
-            parsed.get("wants_baseline"), baseline_model, prompt
-        )
-        needs_training = bool(parsed.get("needs_training", True))
-        data_analysis = bool(parsed.get("data_analysis", True))
-        mentions_augmentation = bool(parsed.get("mentions_augmentation", False))
-        data_augmentation = self._canonicalize_data_augmentation(
-            parsed.get("data_augmentation", [])
-        )
+        top_level_needs_training = True
+        if isinstance(parsed_list, dict):
+            top_level_needs_training = bool(parsed_list.get("needs_training", True))
+            parsed_list = parsed_list.get("tasks", [parsed_list])
 
-        # 只有当用户明确提到数据增强时才保留增强选项，否则清空，避免前端误点增强菜单。
-        if data_augmentation and not mentions_augmentation:
-            logger.warning("LLM 返回了数据增强选项但用户未明确提及，已忽略: %s", data_augmentation)
-            data_augmentation = []
+        if not isinstance(parsed_list, list):
+            raise ValueError(f"LLM 返回的任务格式不正确: {parsed_list}")
 
-        if not task_type:
-            # 测试类指令可能只含"刚刚训练的模型"而不含任务类型，允许为空，由下游推断
-            # 非训练/测试意图（闲聊）也允许 task_type 为空
-            if mode != "test" and needs_training:
-                raise ValueError(f"LLM 未返回有效任务类型: {parsed}")
+        intents: List[TrainIntent] = []
+        for idx, parsed in enumerate(parsed_list):
+            if not isinstance(parsed, dict):
+                raise ValueError(f"第 {idx + 1} 个任务格式不正确: {parsed}")
 
-        # dry_run 覆盖
-        if mode == "train" and ("dry" in prompt.lower() or "只生成" in prompt):
-            mode = "dry_run"
+            task_type = self._canonicalize_task_type(parsed.get("task_type", ""))
+            mode = self._canonicalize_mode(parsed.get("mode", "train"), prompt)
+            categories = self._canonicalize_categories(parsed.get("categories", []))
+            dataset_hint = str(parsed.get("dataset_hint", "")).strip()
+            baseline_model = self._extract_baseline_model(parsed.get("baseline_model"), prompt)
+            wants_baseline = self._wants_baseline_comparison(
+                parsed.get("wants_baseline"), baseline_model, prompt
+            )
+            needs_training = bool(parsed.get("needs_training", top_level_needs_training))
+            data_analysis = bool(parsed.get("data_analysis", True))
+            mentions_augmentation = bool(parsed.get("mentions_augmentation", False))
+            data_augmentation = self._canonicalize_data_augmentation(
+                parsed.get("data_augmentation", [])
+            )
 
-        return TrainIntent(
-            task_type=task_type,
-            categories=categories,
-            dataset_hint=dataset_hint,
-            mode=mode,
-            raw_prompt=prompt,
-            needs_training=needs_training,
-            data_analysis=data_analysis,
-            mentions_augmentation=mentions_augmentation,
-            data_augmentation=data_augmentation,
-            baseline_model=baseline_model,
-            wants_baseline=wants_baseline,
-        )
+            # 只有当用户明确提到数据增强时才保留增强选项，否则清空，避免前端误点增强菜单。
+            if data_augmentation and not mentions_augmentation:
+                logger.warning("LLM 返回了数据增强选项但用户未明确提及，已忽略: %s", data_augmentation)
+                data_augmentation = []
+
+            if not task_type:
+                if mode != "test" and needs_training:
+                    raise ValueError(f"第 {idx + 1} 个任务未返回有效任务类型: {parsed}")
+
+            # dry_run 覆盖：仅当整个请求明确提到 dry/只生成 时才生效
+            if mode == "train" and ("dry" in prompt.lower() or "只生成" in prompt):
+                mode = "dry_run"
+
+            intents.append(
+                TrainIntent(
+                    task_type=task_type,
+                    categories=categories,
+                    dataset_hint=dataset_hint,
+                    mode=mode,
+                    raw_prompt=prompt,
+                    needs_training=needs_training,
+                    data_analysis=data_analysis,
+                    mentions_augmentation=mentions_augmentation,
+                    data_augmentation=data_augmentation,
+                    baseline_model=baseline_model,
+                    wants_baseline=wants_baseline,
+                )
+            )
+
+        if not intents:
+            raise ValueError("LLM 未返回任何有效任务")
+
+        return intents
 
     def _canonicalize_task_type(self, raw: str) -> str:
         """把 LLM 返回的任务类型规范化为内部标准名。"""

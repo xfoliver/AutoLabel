@@ -7,14 +7,14 @@
     "backend_ready_interval": 2.0
   },
   "project": {
-    "name": "2-CLS-20260716_110215",
+    "name": "2-CLS-20260716_151714",
     "task_type": "分类",
     "description": "自动化分类训练项目",
     "dataset_dir": "C:\\Users\\Admin\\kimi_gui_automation\\AI训练平台测试\\2-CLS\\训练集",
-    "work_dir": "C:\\Users\\Admin\\kimi_gui_automation\\AI训练平台测试\\2-CLS\\work\\2-CLS-20260716_110210",
-    "dva_file": "C:\\Users\\Admin\\kimi_gui_automation\\AI训练平台测试\\2-CLS\\work\\2-CLS-20260716_110210\\2-CLS-20260716_110215.dva",
-    "run_id": "2-CLS-20260716_110210",
-    "run_dir": "C:\\Users\\Admin\\kimi_gui_automation\\AI训练平台测试\\2-CLS\\work\\2-CLS-20260716_110210",
+    "work_dir": "C:\\Users\\Admin\\kimi_gui_automation\\AI训练平台测试\\2-CLS\\work\\2-CLS-20260716_151711",
+    "dva_file": "C:\\Users\\Admin\\kimi_gui_automation\\AI训练平台测试\\2-CLS\\work\\2-CLS-20260716_151711\\2-CLS-20260716_151714.dva",
+    "run_id": "2-CLS-20260716_151711",
+    "run_dir": "C:\\Users\\Admin\\kimi_gui_automation\\AI训练平台测试\\2-CLS\\work\\2-CLS-20260716_151711",
     "original_dataset_dir": "C:\\Users\\Admin\\kimi_gui_automation\\AI训练平台测试\\2-CLS\\训练集"
   },
   "training": {
@@ -65,34 +65,13 @@
     "matched_user_categories": {}
   },
   "webbridge": {
-    "record_video_dir": "C:\\Users\\Admin\\kimi_gui_automation\\AI训练平台测试\\2-CLS\\work\\2-CLS-20260716_110210",
-    "screenshot_dir": "C:\\Users\\Admin\\kimi_gui_automation\\AI训练平台测试\\2-CLS\\work\\2-CLS-20260716_110210\\screenshots"
+    "record_video_dir": "C:\\Users\\Admin\\kimi_gui_automation\\AI训练平台测试\\2-CLS\\work\\2-CLS-20260716_151711",
+    "screenshot_dir": "C:\\Users\\Admin\\kimi_gui_automation\\AI训练平台测试\\2-CLS\\work\\2-CLS-20260716_151711\\screenshots"
   },
   "ui_flow": {
     "data_analysis": true,
     "data_augmentation": [
-      "调整图像大小",
-      "随机比例缩放",
-      "随机翻转",
-      "随机固定角度旋转",
-      "随机裁剪",
-      "随机调整亮度",
-      "随机调整对比度",
-      "随机JPG编码"
-    ]
-  },
-  "project_name": "cls_all_augmentation",
-  "description": "分类模型训练，启用全部数据增强选项",
-  "hyperparameters": {
-    "data_augmentation": [
-      "调整图像大小",
-      "随机比例缩放",
-      "随机翻转",
-      "随机固定角度旋转",
-      "随机裁剪",
-      "随机调整亮度",
-      "随机调整对比度",
-      "随机JPG编码"
+      "随机固定角度旋转"
     ]
   }
 }
