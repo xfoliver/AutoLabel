@@ -7,12 +7,12 @@
     "backend_ready_interval": 2.0
   },
   "project": {
-    "name": "6-SSEG-20260701_170132",
+    "name": "6-SSEG-20260710_152407",
     "task_type": "语义分割",
     "description": "自动化语义分割训练项目",
     "dataset_dir": "C:\\Users\\Admin\\kimi_gui_automation\\AI训练平台测试\\6-SSEG\\训练集",
     "work_dir": "C:\\Users\\Admin\\kimi_gui_automation\\AI训练平台测试\\6-SSEG\\work",
-    "dva_file": "C:\\Users\\Admin\\kimi_gui_automation\\AI训练平台测试\\6-SSEG\\6-SSEG-20260701_170132.dva"
+    "dva_file": "C:\\Users\\Admin\\kimi_gui_automation\\AI训练平台测试\\6-SSEG\\6-SSEG-20260710_152407.dva"
   },
   "training": {
     "auto_start": true,
@@ -71,6 +71,21 @@
     "screenshot_dir": "./webbridge_screenshots",
     "headless": false,
     "browser": "chromium",
-    "slow_mo": 50
+    "slow_mo": 300,
+    "step_delay": 1.0,
+    "wait_loading_done": false,
+    "post_click_delay": 2.0,
+    "keep_browser_open": true
+  },
+  "ui_flow": {
+    "data_analysis": true,
+    "data_augmentation": []
+  },
+  "project_name": "语义分割训练项目",
+  "description": "基于用户需求自动创建的语义分割训练任务，使用6-SSEG数据集。",
+  "hyperparameters": {
+    "learning_rate": 0.001,
+    "batch_size": 8,
+    "epochs": 50
   }
 }

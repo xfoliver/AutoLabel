@@ -7,12 +7,12 @@
     "backend_ready_interval": 2.0
   },
   "project": {
-    "name": "5-ISEG-20260701_164634",
+    "name": "5-ISEG-20260710_153657",
     "task_type": "实例分割",
     "description": "自动化实例分割训练项目",
     "dataset_dir": "C:\\Users\\Admin\\kimi_gui_automation\\AI训练平台测试\\5-ISEG\\1-训练集",
     "work_dir": "C:\\Users\\Admin\\kimi_gui_automation\\AI训练平台测试\\5-ISEG\\work",
-    "dva_file": "C:\\Users\\Admin\\kimi_gui_automation\\AI训练平台测试\\5-ISEG\\5-ISEG-20260701_164634.dva"
+    "dva_file": "C:\\Users\\Admin\\kimi_gui_automation\\AI训练平台测试\\5-ISEG\\5-ISEG-20260710_153657.dva"
   },
   "training": {
     "auto_start": true,
@@ -38,7 +38,7 @@
         "width": 640,
         "height": 640
       },
-      "batch_size": 2,
+      "batch_size": 8,
       "lr": 0.001,
       "enable_fp16": true,
       "train_num_workers": 2,
@@ -73,6 +73,14 @@
     "screenshot_dir": "./webbridge_screenshots",
     "headless": false,
     "browser": "chromium",
-    "slow_mo": 50
+    "slow_mo": 300,
+    "step_delay": 1.0,
+    "wait_loading_done": false,
+    "post_click_delay": 2.0,
+    "keep_browser_open": true
+  },
+  "ui_flow": {
+    "data_analysis": true,
+    "data_augmentation": []
   }
 }

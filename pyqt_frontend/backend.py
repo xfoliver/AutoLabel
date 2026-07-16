@@ -8,87 +8,46 @@
 
 from __future__ import annotations
 
+# 优先从项目根目录 .env 加载环境变量
+try:
+    from dotenv import load_dotenv
+except Exception:
+    load_dotenv = None  # type: ignore
+
 import json
 import os
-import re
 import subprocess
 import sys
 import tempfile
 import time
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional
 
 from PyQt5.QtCore import QThread, pyqtSignal
 
+# 保证能 import 项目根下的 autotrain4
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+if load_dotenv is not None:
+    _dotenv_path = PROJECT_ROOT / ".env"
+    if _dotenv_path.exists():
+        load_dotenv(dotenv_path=_dotenv_path, override=True)
+
+from autotrain4.common import (
+    baseline_dir,
+    find_baseline_model,
+    find_latest_config,
+    find_latest_dvp,
+    resolve_path,
+)
+
 AUTO_TRAIN = PROJECT_ROOT / "auto_train4.0.py"
-CONFIG_DIR = PROJECT_ROOT / "config"
-BASELINE_DIR = PROJECT_ROOT / "Baseline Models"
 DEFAULT_INFERENCE_URL = "http://127.0.0.1:9890"
 
-# 与 autotrain4.common.BASELINE_PREFIXES 保持一致
-BASELINE_PREFIXES = {
-    "OCR": "OCR",
-    "分类": "CLS",
-    "目标检测": "DET",
-    "DETR": "DETR",
-    "实例分割": "ISEG",
-    "语义分割": "SSEG",
-    "旋转框检测": "ROTATE",
-}
 
-
-# ---------------------------------------------------------------------------
-# 路径解析工具（桌面端训练后评估用，不依赖 4.0 CLI 交互）
-# ---------------------------------------------------------------------------
-def _load_json(path: Path) -> Dict[str, Any]:
-    with open(path, "r", encoding="utf-8") as f:
-        return json.load(f)
-
-
-def find_latest_config(task_type: str = "") -> Optional[Path]:
-    """查找最新的 auto_latest_*.json。"""
-    if not CONFIG_DIR.exists():
-        return None
-    candidates = list(CONFIG_DIR.glob("auto_latest_*.json"))
-    if not candidates:
-        return None
-    if task_type:
-        safe = re.sub(r"[^\w\-]+", "_", task_type)
-        matched = [p for p in candidates if safe in p.name]
-        if matched:
-            return max(matched, key=lambda p: p.stat().st_mtime)
-    return max(candidates, key=lambda p: p.stat().st_mtime)
-
-
-def find_latest_dvp(directory: Path) -> Optional[Path]:
-    """目录下最新的 .dvp。"""
-    if not directory.exists():
-        return None
-    dvps = list(directory.glob("*.dvp"))
-    if not dvps:
-        return None
-    return max(dvps, key=lambda p: p.stat().st_mtime)
-
-
-def find_baseline_model(task_type: str) -> Optional[Path]:
-    """按任务类型在 Baseline Models 下找最新 baseline。"""
-    if not BASELINE_DIR.exists():
-        return None
-    prefix = BASELINE_PREFIXES.get(task_type)
-    if not prefix:
-        return None
-    candidates = [
-        p
-        for p in BASELINE_DIR.glob("*.dvp")
-        if p.name.upper().startswith(prefix.upper() + "-")
-    ]
-    if not candidates:
-        return None
-    return max(candidates, key=lambda p: p.stat().st_mtime)
-
-
-def resolve_post_train_context() -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+def resolve_post_train_context() -> tuple[Optional[Dict[str, Any]], Optional[str]]:
     """解析训练后评估所需路径。
 
     Returns:
@@ -100,7 +59,8 @@ def resolve_post_train_context() -> Tuple[Optional[Dict[str, Any]], Optional[str
         return None, "未找到 config/auto_latest_*.json，无法做训练后评估"
 
     try:
-        cfg = _load_json(cfg_path)
+        with open(cfg_path, "r", encoding="utf-8") as f:
+            cfg = json.load(f)
     except Exception as e:
         return None, f"读取配置失败: {e}"
 
@@ -112,12 +72,8 @@ def resolve_post_train_context() -> Tuple[Optional[Dict[str, Any]], Optional[str
     if not dataset_dir or not work_dir:
         return None, "配置缺少 project.dataset_dir 或 project.work_dir"
 
-    dataset_path = Path(dataset_dir)
-    work_path = Path(work_dir)
-    if not dataset_path.is_absolute():
-        dataset_path = (PROJECT_ROOT / dataset_path).resolve()
-    if not work_path.is_absolute():
-        work_path = (PROJECT_ROOT / work_path).resolve()
+    dataset_path = resolve_path(dataset_dir)
+    work_path = resolve_path(work_dir)
 
     if not dataset_path.exists():
         return None, f"测试集目录不存在: {dataset_path}"
@@ -135,38 +91,28 @@ def resolve_post_train_context() -> Tuple[Optional[Dict[str, Any]], Optional[str
         "task_type": task_type,
         "dataset_dir": str(dataset_path),
         "work_dir": str(work_path),
+        "run_dir": str(work_path),
         "new_dvp": str(new_dvp),
         "baseline_dvp": str(baseline) if baseline else None,
     }, None
 
 
-# ---------------------------------------------------------------------------
-# 训练 Worker
-# ---------------------------------------------------------------------------
 class TrainWorker(QThread):
-    """后台工作线程：运行 auto_train4.0.py 并实时返回日志。
-
-    固定使用 --no-post-train：训练后评估改由桌面端 PostTrainWorker 负责，
-    避免 4.0 CLI 里 LLM + input() 经嵌套管道卡死。
-    """
+    """后台工作线程：运行 auto_train4.0.py 并实时返回日志。"""
 
     log_received = pyqtSignal(str)
-    status_changed = pyqtSignal(str, str)  # status_text, style_class
-    # return_code, elapsed_seconds, training_completed
-    # training_completed=True 仅当真正跑过 2.0 可视化训练时为真；
-    # 测试最新模型 / 闲聊 / 仅生成配置 等成功结束时为 False，UI 不应弹 post-train 窗。
-    finished_signal = pyqtSignal(int, float, bool)
-    prompt_for_close = pyqtSignal()  # 训练完成、等待关闭浏览器时触发
-    process_started = pyqtSignal()  # auto_train4.0 子进程已启动
+    status_changed = pyqtSignal(str, str)
+    # return_code, elapsed_seconds, training_completed, run_dir
+    finished_signal = pyqtSignal(int, float, bool, str)
+    prompt_for_close = pyqtSignal()
+    process_started = pyqtSignal()
 
-    # 日志特征：真正进入训练执行引擎
     _TRAIN_MARKERS = (
         "========== AUTO TRAIN 4.0 -> 2.0 ==========",
         "========== AUTO TRAIN 2.0 (WebBridge) START ==========",
         "========== AUTO TRAIN 2.0 (WebBridge) DONE ==========",
         "训练已完成，浏览器窗口将保持打开",
     )
-    # 日志特征：测试 / 评估 / 对话，不应弹训练后选择窗
     _NON_TRAIN_MARKERS = (
         "========== AUTO TRAIN 4.0 测试最新模型 ==========",
         "========== AUTO TRAIN 4.0 通用对话 ==========",
@@ -186,17 +132,17 @@ class TrainWorker(QThread):
             Path(tempfile.gettempdir())
             / f"autotrain_close_{os.getpid()}_{id(self)}.signal"
         )
+        self.run_dir: Optional[Path] = None
+        self.train_log_path: Optional[Path] = None
+        self.stdout_log_path: Optional[Path] = None
+        self.stderr_log_path: Optional[Path] = None
+        self.exception_path: Optional[Path] = None
 
     def run(self) -> None:
         start_time = time.time()
         self.status_changed.emit("运行中", "running")
-        self.log_received.emit(f"[开始] 提示词: {self.prompt}")
-
-        try:
-            if self._close_signal_path.exists():
-                self._close_signal_path.unlink()
-        except Exception:
-            pass
+        self._emit_and_log(f"[开始] 提示词: {self.prompt}")
+        self._cleanup_signal_file()
 
         cmd = [
             sys.executable,
@@ -214,7 +160,7 @@ class TrainWorker(QThread):
                 cmd,
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
+                stderr=subprocess.PIPE,
                 text=True,
                 encoding="utf-8",
                 bufsize=1,
@@ -223,43 +169,116 @@ class TrainWorker(QThread):
             )
             self.process_started.emit()
 
-            for line in self.process.stdout:
-                if not self._running:
-                    self.process.terminate()
-                    break
-                line = line.rstrip("\n")
-                if line:
-                    self.log_received.emit(line)
-                    self._observe_log_line(line)
-                    if (
-                        not self._close_prompted
-                        and "训练已完成，浏览器窗口将保持打开" in line
-                    ):
-                        self._close_prompted = True
-                        self.prompt_for_close.emit()
+            import threading
+
+            def _read_stdout() -> None:
+                for line in self.process.stdout:  # type: ignore[union-attr]
+                    if not self._running:
+                        break
+                    self._handle_output_line(line, is_stderr=False)
+
+            def _read_stderr() -> None:
+                for line in self.process.stderr:  # type: ignore[union-attr]
+                    if not self._running:
+                        break
+                    self._handle_output_line(line, is_stderr=True)
+
+            t_out = threading.Thread(target=_read_stdout, daemon=True)
+            t_err = threading.Thread(target=_read_stderr, daemon=True)
+            t_out.start()
+            t_err.start()
 
             self.process.wait()
+            t_out.join(timeout=2)
+            t_err.join(timeout=2)
         except FileNotFoundError:
-            self.log_received.emit(f"[错误] 找不到文件: {AUTO_TRAIN}")
+            self._emit_and_log(f"[错误] 找不到文件: {AUTO_TRAIN}")
             self.status_changed.emit("出错", "error")
-            self.finished_signal.emit(-1, round(time.time() - start_time, 2), False)
+            self.finished_signal.emit(-1, round(time.time() - start_time, 2), False, "")
             return
         except Exception as e:
-            self.log_received.emit(f"[错误] {e}")
+            self._emit_and_log(f"[错误] {e}")
             self.status_changed.emit("出错", "error")
-            self.finished_signal.emit(-1, round(time.time() - start_time, 2), False)
+            self.finished_signal.emit(-1, round(time.time() - start_time, 2), False, "")
             return
         finally:
             self._cleanup_signal_file()
 
         elapsed = round(time.time() - start_time, 2)
         code = self.process.returncode if self.process else -1
-        # 只有真正跑过训练流程才允许 UI 弹 post-train 窗；测试/对话即使成功也不弹
         training_completed = bool(code == 0 and self._saw_training and not self._saw_non_train)
-        self.finished_signal.emit(code, elapsed, training_completed)
+
+        if code != 0 and self.run_dir is not None:
+            self._save_exception(
+                exit_code=code,
+                message=f"auto_train4.0.py 子进程退出码非零: {code}",
+            )
+
+        run_dir_str = str(self.run_dir) if self.run_dir else ""
+        self.finished_signal.emit(code, elapsed, training_completed, run_dir_str)
+
+    def _handle_output_line(self, line: str, is_stderr: bool = False) -> None:
+        line = line.rstrip("\n")
+        if not line:
+            return
+
+        # 捕获 [RUN_DIR] 标记，初始化本地日志文件
+        if self.run_dir is None and line.startswith("[RUN_DIR] "):
+            run_dir = Path(line[len("[RUN_DIR] "):].strip())
+            if run_dir.exists():
+                self._init_run_logs(run_dir)
+
+        self.log_received.emit(line)
+        self._observe_log_line(line)
+        self._write_log(line, is_stderr=is_stderr)
+
+        if not self._close_prompted and "训练已完成，浏览器窗口将保持打开" in line:
+            self._close_prompted = True
+            self.prompt_for_close.emit()
+
+    def _emit_and_log(self, line: str) -> None:
+        self.log_received.emit(line)
+        self._write_log(line, is_stderr=False)
+
+    def _init_run_logs(self, run_dir: Path) -> None:
+        self.run_dir = run_dir
+        self.train_log_path = run_dir / "train.log"
+        self.stdout_log_path = run_dir / "stdout.log"
+        self.stderr_log_path = run_dir / "stderr.log"
+        self.exception_path = run_dir / "exception.json"
+
+    def _write_log(self, line: str, is_stderr: bool = False) -> None:
+        if self.train_log_path:
+            try:
+                with open(self.train_log_path, "a", encoding="utf-8", errors="replace") as f:
+                    f.write(line + "\n")
+            except Exception:
+                pass
+        target = self.stderr_log_path if is_stderr else self.stdout_log_path
+        if target:
+            try:
+                with open(target, "a", encoding="utf-8", errors="replace") as f:
+                    f.write(line + "\n")
+            except Exception:
+                pass
+
+    def _save_exception(self, exit_code: int, message: str) -> None:
+        if not self.exception_path:
+            return
+        try:
+            data = {
+                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                "exit_code": exit_code,
+                "exception_type": "SubprocessError",
+                "message": message,
+            }
+            self.exception_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(self.exception_path, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
 
     def _observe_log_line(self, line: str) -> None:
-        """根据 4.0/2.0 日志判断本次是训练还是测试/闲聊。"""
         for marker in self._TRAIN_MARKERS:
             if marker in line:
                 self._saw_training = True
@@ -270,7 +289,6 @@ class TrainWorker(QThread):
                 break
 
     def send_enter(self) -> None:
-        """关闭浏览器：信号文件 + stdin 回车双通道。"""
         try:
             self._close_signal_path.parent.mkdir(parents=True, exist_ok=True)
             self._close_signal_path.write_text("close", encoding="utf-8")
@@ -287,8 +305,6 @@ class TrainWorker(QThread):
                 self.log_received.emit("[操作] 已发送关闭浏览器指令（模拟回车）")
             except Exception as e:
                 self.log_received.emit(f"[错误] 发送关闭指令失败: {e}")
-        else:
-            self.log_received.emit("[调试] 子进程 stdin 不可用，已依赖信号文件关闭")
 
     def stop(self) -> None:
         self._running = False
@@ -315,15 +331,12 @@ class TrainWorker(QThread):
             pass
 
 
-# ---------------------------------------------------------------------------
-# 训练后评估 Worker（桌面端直接调用推理，不走 LLM/input）
-# ---------------------------------------------------------------------------
 class PostTrainWorker(QThread):
     """训练成功后：生成 inference report 或与 baseline 对比。"""
 
     log_received = pyqtSignal(str)
     status_changed = pyqtSignal(str, str)
-    finished_signal = pyqtSignal(bool, str)  # success, message
+    finished_signal = pyqtSignal(bool, str)
 
     def __init__(
         self,
@@ -333,15 +346,14 @@ class PostTrainWorker(QThread):
         parent: Optional["QObject"] = None,  # type: ignore[name-defined]
     ) -> None:
         super().__init__(parent)
-        self.action = action  # "report" | "compare"
+        self.action = action
         self.context = context
         self.inference_url = inference_url
         self._running = True
 
     def run(self) -> None:
-        # 保证能 import 项目根下的 autotrain4
-        if str(PROJECT_ROOT) not in sys.path:
-            sys.path.insert(0, str(PROJECT_ROOT))
+        from autotrain4.evaluator import InferenceEvaluator
+        from autotrain4.inference_client import InferenceClient
 
         start = time.time()
         self.status_changed.emit("评估中", "running")
@@ -353,19 +365,19 @@ class PostTrainWorker(QThread):
 
         compare = self.action == "compare"
         if compare and not baseline:
-            msg = (
-                f"未找到任务「{task_type}」对应的 baseline 模型"
-                f"（目录: {BASELINE_DIR}），已改为仅生成 inference report"
+            self.log_received.emit(
+                f"[警告] 未找到任务「{task_type}」对应的 baseline 模型"
+                f"（目录: {baseline_dir()}），已改为仅生成 inference report"
             )
-            self.log_received.emit(f"[警告] {msg}")
             compare = False
 
+        run_dir = Path(self.context.get("run_dir") or PROJECT_ROOT)
         report_name = (
-            f"inference_report_{new_dvp.stem}.json"
-            if not compare
-            else f"compare_report_{new_dvp.stem}.json"
+            "baseline_compare_report.json"
+            if compare
+            else "inference_report.json"
         )
-        report_path = PROJECT_ROOT / report_name
+        report_path = run_dir / report_name
 
         self.log_received.emit("========== 训练后评估 ==========")
         self.log_received.emit(f"动作: {'与 baseline 对比' if compare else '生成 inference report'}")
@@ -375,29 +387,6 @@ class PostTrainWorker(QThread):
             self.log_received.emit(f"基准模型: {baseline}")
         self.log_received.emit(f"推理服务: {self.inference_url}")
 
-        # 启动前先探测推理服务，避免只报模糊的「加载模型失败」
-        try:
-            import requests as _requests
-
-            probe = _requests.get(self.inference_url.rstrip("/") + "/", timeout=3)
-            self.log_received.emit(
-                f"[检查] 推理服务可达: {self.inference_url} (HTTP {probe.status_code})"
-            )
-        except Exception as probe_err:
-            self.log_received.emit(
-                f"[错误] 推理服务不可达: {self.inference_url} — {probe_err}"
-            )
-            self.log_received.emit(
-                "[提示] 请先启动 DLCV Test（推理后端，默认 http://127.0.0.1:9890）。"
-                "训练平台 Backend(9887) 不能代替推理服务。"
-            )
-            self.status_changed.emit("失败", "error")
-            self.finished_signal.emit(
-                False,
-                f"推理服务未启动或端口不对: {self.inference_url}",
-            )
-            return
-
         if not new_dvp.exists():
             self.log_received.emit(f"[错误] 模型文件不存在: {new_dvp}")
             self.status_changed.emit("失败", "error")
@@ -405,14 +394,10 @@ class PostTrainWorker(QThread):
             return
 
         try:
-            from autotrain4.evaluator import InferenceEvaluator
-            from autotrain4.inference_client import InferenceClient
-
             def _on_progress(current: int, total: int, image_name: str, model_name: str) -> None:
                 if total <= 0:
                     return
                 pct = int(current * 100 / total)
-                # 条形进度，便于在运行日志里扫一眼
                 bar_len = 20
                 filled = int(bar_len * current / total)
                 bar = "█" * filled + "░" * (bar_len - filled)
@@ -421,8 +406,6 @@ class PostTrainWorker(QThread):
                     f"模型={model_name}  当前={image_name}"
                 )
 
-            # progress=False：不用 tqdm（它只打到终端，PyQt 日志区看不到）
-            # on_progress：把百分比写进运行日志
             client = InferenceClient(base_url=self.inference_url, progress=False)
             evaluator = InferenceEvaluator(client=client)
             report = evaluator.evaluate(
@@ -434,20 +417,32 @@ class PostTrainWorker(QThread):
             report.save(report_path)
 
             summary = report.to_dict().get("summary", {})
+            total = summary.get("total_images", 0)
+            success = summary.get("new_success_count", 0)
+            failed = total - success
             elapsed = round(time.time() - start, 2)
+            avg = round(elapsed / total, 3) if total > 0 else 0.0
             self.log_received.emit(
-                f"[汇总] 总图={summary.get('total_images')} "
-                f"新模型成功={summary.get('new_success_count')} "
-                f"一致={summary.get('match_count')} "
-                f"不一致={summary.get('mismatch_count')}"
+                f"[汇总] 总图={total} 成功={success} 失败={failed} 平均={avg}s/张"
             )
-            self.log_received.emit(f"[完成] 报告已保存: {report_path} （耗时 {elapsed}s）")
+            if compare:
+                self.log_received.emit(
+                    f"[汇总] baseline成功={summary.get('baseline_success_count')} "
+                    f"一致={summary.get('match_count')} 不一致={summary.get('mismatch_count')}"
+                )
+            self.log_received.emit(f"[完成] 报告已保存: {report_path} （总耗时 {elapsed}s）")
             self.status_changed.emit("成功", "success")
             self.finished_signal.emit(True, str(report_path))
         except Exception as e:
-            self.log_received.emit(f"[错误] 训练后评估失败: {e}")
+            err_msg = str(e)
+            self.log_received.emit(f"[错误] 训练后评估失败: {err_msg}")
+            if "未 ready" in err_msg or "无法连接" in err_msg or "Connection" in err_msg:
+                self.log_received.emit(
+                    "[提示] 请先启动 DLCV Test（推理后端，默认 http://127.0.0.1:9890）。"
+                    "训练平台 Backend(9887) 不能代替推理服务。"
+                )
             self.status_changed.emit("失败", "error")
-            self.finished_signal.emit(False, str(e))
+            self.finished_signal.emit(False, err_msg)
 
     def stop(self) -> None:
         self._running = False

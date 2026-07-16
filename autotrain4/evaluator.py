@@ -10,9 +10,9 @@ import logging
 from dataclasses import dataclass, field
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Union
 
-from .inference_client import InferenceClient
+from .inference_client import InferenceClient, InferenceError
 
 logger = logging.getLogger(__name__)
 
@@ -170,20 +170,31 @@ class InferenceEvaluator:
             logger.info("基准模型: %s", baseline_model_path)
         logger.info("测试图片目录: %s", image_dir)
 
-        # 有 GUI 回调时关掉 tqdm，改由回调/日志输出百分比，避免进度只出现在终端
-        use_tqdm = self.progress and on_progress is None
+        # 先调用真实版本接口确认服务在线
+        try:
+            version_info = self.client.get_version()
+            logger.info(
+                "推理服务 get_version 成功: version=%s, 耗时=%.3fs",
+                version_info.get("version"),
+                version_info.get("elapsed"),
+            )
+        except InferenceError:
+            logger.error("推理服务未 ready，请检查 backend / 模型测试 API")
+            raise
+
         new_results = self.client.infer_batch(
             new_model_path,
             image_dir,
-            progress=use_tqdm,
+            progress=self.progress,
             on_progress=on_progress,
         )
+
         baseline_results: Optional[List[Dict[str, Any]]] = None
         if baseline_model_path:
             baseline_results = self.client.infer_batch(
                 baseline_model_path,
                 image_dir,
-                progress=use_tqdm,
+                progress=self.progress,
                 on_progress=on_progress,
             )
 
@@ -266,9 +277,9 @@ class InferenceEvaluator:
 
         logger.info("========== 推理评估汇总 ==========")
         logger.info("总图片数: %s", report.total_images)
-        logger.info("新模型成功: %s", report.new_success_count)
+        logger.info("新模型成功: %s, 失败: %s", report.new_success_count, report.total_images - report.new_success_count)
         if baseline_model_path:
-            logger.info("基准模型成功: %s", report.baseline_success_count)
+            logger.info("基准模型成功: %s, 失败: %s", report.baseline_success_count, report.total_images - report.baseline_success_count)
             logger.info("结果一致: %s", report.match_count)
             logger.info("结果不一致: %s", report.mismatch_count)
 
@@ -337,30 +348,3 @@ class InferenceEvaluator:
                 return False
 
         return True
-
-
-def compare_models(
-    new_model_path: Union[str, Path],
-    baseline_model_path: Union[str, Path],
-    image_dir: Union[str, Path],
-    report_path: Optional[Union[str, Path]] = None,
-    inference_api_url: str = "http://127.0.0.1:9890",
-) -> Path:
-    """
-    便捷函数：对比两个模型并保存报告。
-
-    Returns:
-        报告文件路径。
-    """
-    client = InferenceClient(base_url=inference_api_url)
-    evaluator = InferenceEvaluator(client=client)
-    report = evaluator.evaluate(
-        new_model_path=new_model_path,
-        image_dir=image_dir,
-        baseline_model_path=baseline_model_path,
-    )
-
-    if report_path is None:
-        report_path = Path(new_model_path).parent / "inference_report.json"
-
-    return report.save(report_path)

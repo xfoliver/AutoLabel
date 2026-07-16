@@ -12,18 +12,35 @@ DLCV AI 训练平台自动化入口 4.0（自然语言 Agent 层）
 保留前端 WebBridge 自动化，无需 API-first。
 """
 
+import os
+from pathlib import Path
+
+# 优先从项目根目录 .env 加载环境变量，避免在代码里硬编码密钥
+# python-dotenv 未安装时静默跳过
+try:
+    from dotenv import load_dotenv
+
+    _dotenv_path = Path(__file__).parent / ".env"
+    if _dotenv_path.exists():
+        load_dotenv(dotenv_path=_dotenv_path, override=True)
+except Exception:
+    pass
+
 import argparse
 import json
 import logging
-import os
-import re
 import subprocess
 import sys
 import time
-from pathlib import Path
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from autotrain4.common import BASELINE_PREFIXES
+from autotrain4.common import (
+    find_baseline_model,
+    find_latest_config,
+    find_latest_dvp,
+    resolve_path,
+)
 from autotrain4.config_builder import ConfigBuilder
 from autotrain4.evaluator import InferenceEvaluator
 from autotrain4.inference_client import InferenceClient
@@ -31,6 +48,7 @@ from autotrain4.judge import RequirementJudge
 from autotrain4.llm_client import LLMClient
 from autotrain4.nlu import IntentParser
 from autotrain4.resolver import DatasetResolver
+from autotrain4.run_context import RunContext
 
 # 在 Windows Git Bash / CMD / PowerShell 中保持中文日志不乱码
 if sys.platform == "win32" and sys.stdout.encoding not in ("utf-8", "UTF-8"):
@@ -62,23 +80,15 @@ class AutoTrain4Orchestrator:
     def __init__(self, args: argparse.Namespace):
         self.args = args
         self.project_root = Path(__file__).parent.resolve()
-        self.scan_dir = self._resolve_path(args.scan_dir or "AI训练平台测试")
-        self.chat_history_path = self._resolve_path(args.chat_history or "./record/chat_history.json")
+        self.scan_dir = resolve_path(args.scan_dir or "AI训练平台测试")
+        self.chat_history_path = resolve_path(args.chat_history or "./record/chat_history.json")
         if getattr(args, "clear_chat_history", False):
             self._clear_chat_history()
         self.llm = self._build_llm_client()
         self.intent: Optional[Any] = None
         self.match: Optional[Any] = None
         self.config_path: Optional[Path] = None
-
-    @staticmethod
-    def _resolve_path(raw: str) -> Path:
-        """解析相对路径，支持 %VAR% 环境变量。"""
-        expanded = os.path.expandvars(raw)
-        p = Path(expanded)
-        if not p.is_absolute():
-            p = (Path(__file__).parent / p).resolve()
-        return p
+        self.run_ctx: Optional[RunContext] = None
 
     @staticmethod
     def _build_llm_client() -> LLMClient:
@@ -107,12 +117,25 @@ class AutoTrain4Orchestrator:
         self.match = self._resolve_match()
         logger.info("匹配数据集: %s", self.match.to_dict())
 
-        # 4. 第三层：DeepSeek 需求分析与判断
+        # 5. 创建本次 run 的归档上下文
+        self.run_ctx = RunContext(
+            dataset_dir=self.match.dataset_dir,
+            project_dir=self.match.folder,
+            folder_name=self.match.folder.name,
+        )
+        self.run_ctx.save_runtime_info({
+            "backend_url": self.args.inference_api_url,
+            "frontend_url": self.config.get("webbridge", {}).get("frontend_url") if hasattr(self, "config") else None,
+        })
+        logger.info("本次训练归档目录: %s", self.run_ctx.run_dir)
+        print(f"[RUN_DIR] {self.run_ctx.run_dir}", flush=True)
+
+        # 6. 第三层：DeepSeek 需求分析与判断
         judge = RequirementJudge()
         judge_result = judge.judge(self.intent, self.match)
         logger.info("DeepSeek 判断: %s", judge_result.to_dict())
 
-        # 5. 生成配置
+        # 7. 生成配置
         builder = ConfigBuilder(
             self.intent,
             self.match,
@@ -123,15 +146,17 @@ class AutoTrain4Orchestrator:
             llm_client=self.llm,
             record=self.args.record,
             record_dir=self.args.record_dir,
+            run_context=self.run_ctx,
         )
         self.config_path = builder.save(self.args.config_out)
+        self.run_ctx.save_config(builder.build())
 
         if self.args.generate_config_only:
             logger.info("--generate-config-only: 已生成配置，不启动训练")
             logger.info("配置文件: %s", self.config_path)
             return 0
 
-        # 5. 调用 auto_train2.0.py
+        # 8. 调用 auto_train2.0.py
         return self._run_auto_train2()
 
     def _resolve_match(self):
@@ -171,6 +196,11 @@ class AutoTrain4Orchestrator:
 
         result = subprocess.run(cmd, check=False)
         if result.returncode != 0:
+            if getattr(self, "run_ctx", None):
+                self.run_ctx.save_exception(
+                    message=f"auto_train2.0.py 子进程退出码非零: {result.returncode}",
+                    exit_code=result.returncode,
+                )
             return result.returncode
 
         # 训练成功后，通过 LLM 询问用户是否生成 inference report / 与 baseline 对比
@@ -201,18 +231,28 @@ class AutoTrain4Orchestrator:
             logger.error("配置文件缺少 project.dataset_dir 或 project.work_dir")
             return 1
 
-        dataset_dir = self._resolve_path(dataset_dir)
-        work_dir = self._resolve_path(work_dir)
+        dataset_dir = resolve_path(dataset_dir)
+        work_dir = resolve_path(work_dir)
 
         if not dataset_dir.exists():
             logger.error("训练集目录不存在: %s", dataset_dir)
             return 1
 
         # 查找工作目录下最新的 .dvp 模型
-        new_dvp = self._find_latest_dvp_in_dir(work_dir)
+        new_dvp = find_latest_dvp(work_dir)
         if not new_dvp:
             logger.error("未在 work_dir 找到 .dvp 模型文件: %s", work_dir)
             return 1
+
+        # 为本次测试创建独立的 run 目录
+        self.run_ctx = RunContext(
+            dataset_dir=dataset_dir,
+            project_dir=work_dir.parent,
+            folder_name=f"{work_dir.parent.name}-test",
+        )
+        self.run_ctx.save_runtime_info()
+        logger.info("本次测试归档目录: %s", self.run_ctx.run_dir)
+        print(f"[RUN_DIR] {self.run_ctx.run_dir}", flush=True)
 
         logger.info("任务类型: %s", task_type)
         logger.info("新模型: %s", new_dvp)
@@ -296,83 +336,31 @@ class AutoTrain4Orchestrator:
     def _find_latest_config(self) -> Optional[Path]:
         """查找最新的 auto_train4 配置文件。"""
         if self.args.latest_config:
-            p = self._resolve_path(self.args.latest_config)
+            p = resolve_path(self.args.latest_config)
             if p.exists():
                 return p
             logger.warning("--latest-config 指定文件不存在: %s", p)
 
-        config_dir = self.project_root / "config"
-        if not config_dir.exists():
-            return None
-
-        candidates = list(config_dir.glob("auto_latest_*.json"))
-        if not candidates:
-            return None
-
-        # 如果有意图任务类型，优先匹配对应任务
         task_type = self.intent.task_type if self.intent else ""
-        if task_type:
-            safe_task = re.sub(r"[^\w\-]+", "_", task_type)
-            matched = [p for p in candidates if safe_task in p.name]
-            if matched:
-                return max(matched, key=lambda p: p.stat().st_mtime)
-
-        return max(candidates, key=lambda p: p.stat().st_mtime)
-
-    def _find_latest_dvp_in_dir(self, directory: Path) -> Optional[Path]:
-        """查找目录下最新的 .dvp 文件。"""
-        dvps = list(directory.glob("*.dvp"))
-        if not dvps:
-            return None
-        return max(dvps, key=lambda p: p.stat().st_mtime)
-
-    def _resolve_baseline_model(
-        self,
-        task_type: str,
-        hint: Optional[str] = None,
-    ) -> Optional[Path]:
-        """根据任务类型自动定位 Baseline Models 目录下的基准模型。"""
-        baseline_dir = self.project_root / "Baseline Models"
-        if not baseline_dir.exists():
-            return None
-
-        prefix = BASELINE_PREFIXES.get(task_type)
-        if not prefix:
-            return None
-
-        candidates = [
-            p for p in baseline_dir.glob("*.dvp")
-            if p.name.upper().startswith(prefix.upper() + "-")
-        ]
-        if hint:
-            hint_lower = hint.lower()
-            candidates = [p for p in candidates if hint_lower in p.name.lower()]
-
-        if not candidates:
-            return None
-        return max(candidates, key=lambda p: p.stat().st_mtime)
+        return find_latest_config(task_type)
 
     def _effective_baseline_model(self, task_type: str) -> Optional[str]:
         """综合命令行参数、意图中的路径、自动定位，得到最终 baseline 模型路径。"""
-        # 1. 命令行参数优先级最高
         if self.args.baseline_model:
             return self.args.baseline_model
 
-        # 2. 意图中显式指定的路径
         intent_baseline = self.intent.baseline_model if self.intent else None
         if intent_baseline:
-            path = self._resolve_path(intent_baseline)
+            path = resolve_path(intent_baseline)
             if path.exists():
                 return str(path)
-            # 也尝试相对于项目根目录
             rel_path = self.project_root / intent_baseline
             if rel_path.exists():
                 return str(rel_path)
 
-        # 3. 用户表达了对比意愿，自动定位 baseline
         wants_baseline = self.intent.wants_baseline if self.intent else False
         if wants_baseline:
-            resolved = self._resolve_baseline_model(task_type, hint=intent_baseline)
+            resolved = find_baseline_model(task_type)
             if resolved:
                 logger.info("自动定位到基准模型: %s", resolved)
                 return str(resolved)
@@ -380,10 +368,8 @@ class AutoTrain4Orchestrator:
 
         return None
 
-    def _load_json_config(self, path: Path) -> Dict[str, Any]:
-        """加载 JSON 配置文件。"""
-        import json
-
+    @staticmethod
+    def _load_json_config(path: Path) -> Dict[str, Any]:
         with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
 
@@ -409,58 +395,24 @@ class AutoTrain4Orchestrator:
             )
 
             if report_path is None:
-                report_path = self._resolve_path(
-                    self.args.inference_report_path
-                    or f"test_report_{new_dvp.stem}.json"
-                )
+                if self.args.inference_report_path:
+                    report_path = resolve_path(self.args.inference_report_path)
+                elif getattr(self, "run_ctx", None):
+                    if baseline_model_path:
+                        report_path = self.run_ctx.baseline_compare_report_path
+                    else:
+                        report_path = self.run_ctx.inference_report_path
+                else:
+                    report_path = resolve_path(f"test_report_{new_dvp.stem}.json")
             report.save(report_path)
-            logger.info("推理评估完成，报告: %s", report_path)
-        except Exception as e:
-            logger.exception("推理评估失败: %s", e)
-
-    def _run_inference_and_compare(self) -> None:
-        """训练完成后，对新模型推理并与基准模型对比。"""
-        if self.args.skip_inference or not self.args.test_image_dir:
-            logger.info("跳过推理对比（未指定测试图片目录或启用 --skip-inference）")
-            return
-
-        test_image_dir = self._resolve_path(self.args.test_image_dir)
-        if not test_image_dir.exists():
-            logger.warning("测试图片目录不存在，跳过推理: %s", test_image_dir)
-            return
-
-        new_dvp = self._find_new_dvp()
-        if not new_dvp:
-            logger.warning("未找到新生成的 .dvp 模型文件，跳过推理")
-            return
-
-        task_type = self.config.get("project", {}).get("task_type") or (
-            self.intent.task_type if self.intent else ""
-        )
-        baseline_model = self._effective_baseline_model(task_type)
-
-        logger.info("========== AUTO TRAIN 4.0 推理评估 ==========")
-        logger.info("新模型: %s", new_dvp)
-        logger.info("测试图片目录: %s", test_image_dir)
-        if baseline_model:
-            logger.info("基准模型: %s", baseline_model)
-
-        client = InferenceClient(
-            base_url=self.args.inference_api_url,
-            progress=not self.args.no_progress,
-        )
-        evaluator = InferenceEvaluator(client=client)
-
-        try:
-            report = evaluator.evaluate(
-                new_model_path=new_dvp,
-                image_dir=test_image_dir,
-                baseline_model_path=baseline_model,
-            )
-
-            report_path = self._resolve_path(self.args.inference_report_path or "inference_report.json")
-            report.save(report_path)
-            logger.info("推理评估完成，报告: %s", report_path)
+            summary = report.to_dict().get("summary", {})
+            logger.info("========== 推理评估完成 ==========")
+            logger.info("报告保存路径: %s", report_path)
+            logger.info("总图片数: %s", summary.get("total_images"))
+            logger.info("成功: %s, 失败: %s", summary.get("new_success_count"), summary.get("total_images", 0) - summary.get("new_success_count", 0))
+            if baseline_model_path:
+                logger.info("baseline 成功: %s", summary.get("baseline_success_count"))
+                logger.info("一致: %s, 不一致: %s", summary.get("match_count"), summary.get("mismatch_count"))
         except Exception as e:
             logger.exception("推理评估失败: %s", e)
 
@@ -473,7 +425,7 @@ class AutoTrain4Orchestrator:
             return
 
         cfg = self._load_generated_config() if self.config_path else {}
-        project = cfg.get("project", {}) or self.config.get("project", {})
+        project = cfg.get("project", {})
         task_type = project.get("task_type") or (
             self.intent.task_type if self.intent else "unknown"
         )
@@ -573,15 +525,24 @@ class AutoTrain4Orchestrator:
         if not test_dir_str:
             print("[POST_TRAIN_RESULT] 未指定测试图片目录，无法生成报告")
             return
-        test_dir = self._resolve_path(test_dir_str)
+        test_dir = resolve_path(test_dir_str)
         if not test_dir.exists():
             print(f"[POST_TRAIN_RESULT] 测试图片目录不存在: {test_dir}")
             return
 
-        report_path_str = decision.get("report_path") or "inference_report.json"
-        report_path = self._resolve_path(report_path_str)
-
         baseline = decision.get("baseline_model") or baseline_model
+
+        # 默认报告路径落到 run_dir
+        if decision.get("report_path"):
+            report_path = resolve_path(decision["report_path"])
+        elif getattr(self, "run_ctx", None):
+            report_path = (
+                self.run_ctx.baseline_compare_report_path
+                if baseline
+                else self.run_ctx.inference_report_path
+            )
+        else:
+            report_path = resolve_path("inference_report.json")
 
         logger.info("========== AUTO TRAIN 4.0 训练后推理评估 ==========")
         logger.info("新模型: %s", new_dvp)
@@ -602,39 +563,28 @@ class AutoTrain4Orchestrator:
         if not self.config_path:
             return None
 
-        # 1. 优先在 work_dir 下找最新的 .dvp
         cfg = self._load_generated_config()
         work_dir_str = cfg.get("project", {}).get("work_dir")
         if work_dir_str:
-            work_dir = self._resolve_path(work_dir_str)
+            work_dir = resolve_path(work_dir_str)
             if work_dir.exists():
-                dvps = list(work_dir.glob("*.dvp"))
-                if dvps:
-                    return max(dvps, key=lambda p: p.stat().st_mtime)
+                latest = find_latest_dvp(work_dir)
+                if latest:
+                    return latest
 
-        # 2. 在 .dva 同目录找同名 .dvp
-        dva_path = self.config_path.with_suffix(".dva")
-        if dva_path.exists():
-            dvp_path = dva_path.with_suffix(".dvp")
+        # fallback：在 .dva / config 同目录找同名 .dvp
+        for base in (self.config_path.with_suffix(".dva"), self.config_path):
+            dvp_path = base.with_suffix(".dvp")
             if dvp_path.exists():
                 return dvp_path
-
-        # 3. 在 config 路径同目录下找同名 .dvp
-        dvp_path = self.config_path.with_suffix(".dvp")
-        if dvp_path.exists():
-            return dvp_path
 
         return None
 
     def _load_generated_config(self) -> Dict[str, Any]:
         """加载生成的 JSON 配置文件。"""
-        import json
-
-        try:
-            with open(self.config_path, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
+        if not self.config_path:
             return {}
+        return self._load_json_config(self.config_path)
 
 
 def main() -> int:
@@ -726,10 +676,6 @@ def main() -> int:
         help="训练集拉到 100%%（train_set_val=100，验证集保持模板默认值），用于可复现性验证",
     )
     parser.add_argument(
-        "--test-image-dir",
-        help="训练完成后用于推理测试的图片目录",
-    )
-    parser.add_argument(
         "--baseline-model",
         help="基准模型 .dvp 路径，用于与新模型推理结果对比",
     )
@@ -741,11 +687,6 @@ def main() -> int:
     parser.add_argument(
         "--inference-report-path",
         help="推理对比报告保存路径，默认 inference_report.json",
-    )
-    parser.add_argument(
-        "--skip-inference",
-        action="store_true",
-        help="跳过训练后的推理对比",
     )
     parser.add_argument(
         "--no-progress",
@@ -773,18 +714,54 @@ def main() -> int:
     )
     args = parser.parse_args()
 
+    orchestrator: Optional[AutoTrain4Orchestrator] = None
     try:
         orchestrator = AutoTrain4Orchestrator(args)
         return orchestrator.run()
     except AutoTrain4Error as e:
         logger.error("AutoTrain 4.0 流程失败: %s", e)
+        _save_exception_fallback(orchestrator, e, exit_code=1)
         return 1
     except Exception as e:
         logger.exception("AutoTrain 4.0 发生未预期错误: %s", e)
+        _save_exception_fallback(orchestrator, e, exit_code=1)
         return 1
     except KeyboardInterrupt:
         logger.warning("用户中断")
+        _save_exception_fallback(
+            orchestrator,
+            message="用户通过 Ctrl+C 中断训练",
+            exit_code=130,
+        )
         return 130
+
+
+def _save_exception_fallback(
+    orchestrator: Optional[AutoTrain4Orchestrator],
+    exc: Optional[BaseException] = None,
+    message: Optional[str] = None,
+    exit_code: int = 1,
+) -> None:
+    """保存异常到 run_ctx 目录；若 run_ctx 尚未创建，则落到 failed_runs/<timestamp>/。"""
+    if orchestrator is not None and getattr(orchestrator, "run_ctx", None):
+        if exc is not None:
+            orchestrator.run_ctx.save_exception(exc=exc, exit_code=exit_code)
+        else:
+            orchestrator.run_ctx.save_exception(message=message, exit_code=exit_code)
+        return
+
+    # 早期失败兜底
+    try:
+        failed_dir = Path(__file__).parent / "failed_runs" / datetime.now().strftime("%Y%m%d_%H%M%S")
+        failed_dir.mkdir(parents=True, exist_ok=True)
+        ctx = RunContext(dataset_dir=failed_dir, folder_name="early-failure")
+        if exc is not None:
+            ctx.save_exception(exc=exc, exit_code=exit_code)
+        else:
+            ctx.save_exception(message=message, exit_code=exit_code)
+        logger.info("早期失败异常已保存到: %s", ctx.exception_path)
+    except Exception:
+        pass
 
 
 if __name__ == "__main__":

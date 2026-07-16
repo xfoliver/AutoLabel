@@ -2,10 +2,10 @@
 DLCV 推理接口客户端。
 
 封装本地推理服务 http://127.0.0.1:9890 的调用，
-支持模型加载、单张与批量图片推理。
+支持模型加载、版本检查、单张与批量图片推理。
 
 关键流程：
-    1. 启动/连接 DLCV Test 后端服务（监听 127.0.0.1:9890）。
+    1. GET /version 确认服务在线。
     2. POST /load_model {"model_path": "<.dvp>"} 加载模型。
     3. POST /api/inference {"model_path": "<.dvp>", "img": "<base64>"} 执行推理。
 
@@ -25,6 +25,16 @@ import requests
 from tqdm import tqdm
 
 logger = logging.getLogger(__name__)
+
+VERSION_ENDPOINTS = (
+    "/version",
+    "/get_version",
+    "/getVersion",
+    "/api/version",
+    "/api/get_version",
+    "/api/getVersion",
+    "/v1/version",
+)
 
 
 class InferenceError(Exception):
@@ -54,21 +64,70 @@ class InferenceClient:
         self.session = requests.session()
         self._loaded_model_path: Optional[str] = None
 
+    def get_version(self, timeout: float = 10.0) -> Dict[str, Any]:
+        """调用真实版本接口确认推理服务在线且已 ready。"""
+        total_start = time.time()
+        last_error: Optional[Exception] = None
+        last_status_code: Optional[int] = None
+
+        for endpoint in VERSION_ENDPOINTS:
+            url = f"{self.base_url}{endpoint}"
+            try:
+                start = time.time()
+                response = self.session.get(url, timeout=timeout)
+                last_status_code = response.status_code
+                response.raise_for_status()
+                elapsed = time.time() - start
+                data = response.json()
+                version = self._extract_version(data)
+
+                logger.info(
+                    "推理服务 get_version 成功: version=%s, 耗时=%.3fs, url=%s",
+                    version,
+                    elapsed,
+                    url,
+                )
+                return {
+                    "success": True,
+                    "version": version,
+                    "elapsed": elapsed,
+                    "backend_url": self.base_url,
+                    "reachable": True,
+                    "raw": data,
+                }
+            except requests.exceptions.ConnectionError as e:
+                last_error = e
+                logger.error("推理服务未 ready: %s (url=%s)", e, url)
+            except requests.exceptions.HTTPError as e:
+                last_error = e
+                last_status_code = e.response.status_code if e.response else None
+                logger.debug("版本接口 %s 返回 HTTP %s", endpoint, last_status_code)
+            except Exception as e:
+                last_error = e
+                logger.debug("版本接口 %s 不可用: %s", endpoint, e)
+
+        total_elapsed = time.time() - total_start
+        raise InferenceError(
+            f"推理服务未 ready，请检查 backend / 模型测试 API "
+            f"(url={self.base_url}, status={last_status_code}, error={last_error})"
+        ) from last_error
+
+    @staticmethod
+    def _extract_version(data: Any) -> str:
+        if not isinstance(data, dict):
+            return str(data)
+        version = data.get("version")
+        if version is None:
+            nested = data.get("data") or data.get("result") or {}
+            version = nested.get("version") if isinstance(nested, dict) else nested
+        return str(version) if version is not None else str(data)
+
     def load_model(
         self,
         model_path: Union[str, Path],
         force_reload: bool = False,
     ) -> Dict[str, Any]:
-        """
-        加载 .dvp 模型到推理服务。
-
-        Args:
-            model_path: .dvp 模型文件路径。
-            force_reload: 即使该模型已加载，也强制重新加载。
-
-        Returns:
-            /load_model 接口返回的 JSON 结果。
-        """
+        """加载 .dvp 模型到推理服务。"""
         model_path = Path(model_path).resolve()
         if not model_path.exists():
             raise InferenceError(f"模型文件不存在: {model_path}")
@@ -80,7 +139,6 @@ class InferenceClient:
 
         url = f"{self.base_url}/load_model"
         payload = {"model_path": model_path_str}
-        last_error: Optional[Exception] = None
 
         for attempt in range(self.max_retries + 1):
             try:
@@ -89,28 +147,12 @@ class InferenceClient:
                 result = response.json()
 
                 if result.get("code") not in (None, "00000", "0"):
-                    raise InferenceError(
-                        f"加载模型失败 [{model_path.name}]: {result}"
-                    )
+                    raise InferenceError(f"加载模型失败 [{model_path.name}]: {result}")
 
                 self._loaded_model_path = model_path_str
                 logger.info("模型加载成功: %s", model_path.name)
                 return result
-            except InferenceError:
-                raise
-            except requests.exceptions.ConnectionError as e:
-                last_error = e
-                logger.warning(
-                    "无法连接推理服务 (%s/%s) %s: %s",
-                    attempt + 1,
-                    self.max_retries + 1,
-                    self.base_url,
-                    e,
-                )
-                if attempt < self.max_retries:
-                    time.sleep(self.retry_delay * (attempt + 1))
             except requests.exceptions.RequestException as e:
-                last_error = e
                 logger.warning(
                     "模型加载请求失败 (%s/%s): %s - %s",
                     attempt + 1,
@@ -121,38 +163,14 @@ class InferenceClient:
                 if attempt < self.max_retries:
                     time.sleep(self.retry_delay * (attempt + 1))
 
-        # 区分「服务没开」和「服务开了但加载失败」
-        if isinstance(last_error, requests.exceptions.ConnectionError):
-            raise InferenceError(
-                f"无法连接推理服务 {self.base_url}，加载模型失败 [{model_path.name}]。"
-                f"请先启动 DLCV Test（推理后端，默认监听 127.0.0.1:9890），"
-                f"确认模型文件存在后再重试。原始错误: {last_error}"
-            )
-        raise InferenceError(
-            f"加载模型失败 [{model_path.name}]，推理服务: {self.base_url}，"
-            f"最后错误: {last_error}"
-        )
+        raise InferenceError(f"加载模型失败 [{model_path.name}]")
 
     def infer(
         self,
         model_path: Union[str, Path],
         image_path: Union[str, Path],
     ) -> Dict[str, Any]:
-        """
-        对单张图片进行推理。
-
-        调用前会自动加载模型（若未加载）。
-
-        Args:
-            model_path: .dvp 模型文件路径。
-            image_path: 待推理图片路径。
-
-        Returns:
-            推理接口返回的 JSON 结果。
-
-        Raises:
-            InferenceError: 模型文件或图片不存在、请求失败、返回非 JSON。
-        """
+        """对单张图片进行推理，返回服务端原始响应。"""
         model_path = Path(model_path)
         image_path = Path(image_path)
 
@@ -182,7 +200,6 @@ class InferenceClient:
                 response.raise_for_status()
                 result = response.json()
 
-                # 识别 DLCV 服务返回的业务错误
                 if result.get("code") == "00001" and "模型未加载" in str(
                     result.get("message", "")
                 ):
@@ -212,20 +229,7 @@ class InferenceClient:
         progress: Optional[bool] = None,
         on_progress: Optional[Callable[[int, int, str, str], None]] = None,
     ) -> List[Dict[str, Any]]:
-        """
-        对文件夹或指定图片列表批量推理。
-
-        Args:
-            model_path: .dvp 模型文件路径。
-            image_dir: 图片所在目录（当 image_paths 为 None 时遍历该目录）。
-            image_paths: 可选，指定具体的图片路径列表。
-            progress: 是否在终端显示进度条，默认跟随 self.progress。
-            on_progress: 可选回调 (current, total, image_name, model_name)，
-                用于 GUI 等场景把百分比写到日志区；与 tqdm 可同时存在。
-
-        Returns:
-            每张图片的推理结果列表，失败条目也会包含 error 字段。
-        """
+        """对文件夹或指定图片列表批量推理。"""
         model_path = Path(model_path)
 
         # 批量推理前先统一加载一次模型，避免每张图片都重复加载
@@ -248,10 +252,7 @@ class InferenceClient:
         show_progress = self.progress if progress is None else progress
         iterator = enumerate(image_paths, 1)
 
-        # 进度显示策略：
-        # 1. 默认用 tqdm 进度条；2. 非交互环境或显式关闭时，用 logger 定期报告进度
-        # 3. 若提供 on_progress，则始终回调（供 PyQt 日志区显示百分比）
-        use_tqdm = show_progress and total > 0 and on_progress is None
+        use_tqdm = show_progress and on_progress is None and total > 0
         if use_tqdm:
             try:
                 iterator = tqdm(
@@ -266,34 +267,16 @@ class InferenceClient:
             except Exception:
                 use_tqdm = False
 
-        # 有回调时更密一点（约每 2% 或每张），无回调时约每 10%
-        if on_progress is not None:
-            report_interval = max(1, total // 50) if total > 0 else 1
-        else:
-            report_interval = max(1, total // 10) if total > 0 else 1
-
-        if total == 0:
-            logger.warning("图片目录为空，跳过推理: %s", image_dir if image_paths is None else model_path)
-        else:
-            logger.info("开始批量推理: 模型=%s, 共 %s 张图", model_path.name, total)
-
+        report_interval = max(1, total // 10) if total > 0 else 1
         for idx, img_path in iterator:
-            should_log = (idx == 1) or (idx == total) or (idx % report_interval == 0)
-            if on_progress is not None and should_log:
+            should_notify = idx == 1 or idx == total or idx % report_interval == 0
+            if on_progress is not None and should_notify:
                 try:
                     on_progress(idx, total, img_path.name, model_path.name)
                 except Exception:
                     pass
-            if not use_tqdm and should_log:
-                pct = int(idx * 100 / total) if total else 100
-                logger.info(
-                    "推理进度 [%s]: %s/%s (%s%%) - %s",
-                    model_path.name,
-                    idx,
-                    total,
-                    pct,
-                    img_path.name,
-                )
+            elif not use_tqdm and should_notify:
+                logger.info("推理进度: %s/%s - %s", idx, total, img_path.name)
             else:
                 logger.debug("推理进度: %s/%s - %s", idx, total, img_path.name)
             try:
@@ -314,10 +297,6 @@ class InferenceClient:
                     "success": False,
                     "error": str(e),
                 })
-
-        if total > 0:
-            ok = sum(1 for r in results if r.get("success"))
-            logger.info("批量推理结束: %s 成功 %s/%s", model_path.name, ok, total)
 
         return results
 

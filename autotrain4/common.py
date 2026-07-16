@@ -1,10 +1,14 @@
 """
-AutoTrain 4.0 共享常量。
+AutoTrain 4.0 共享常量与工具函数。
 
-包含任务类型映射、模板配置文件、文件夹关键词、数据集子目录探测优先级等。
+包含任务类型映射、模板配置文件、文件夹关键词、数据集子目录探测优先级，
+以及配置/模型路径查找等通用工具。
 """
 
-from typing import Dict, List
+import os
+import re
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple, Union
 
 # ---------------------------------------------------------------------------
 # 任务类型映射
@@ -102,3 +106,70 @@ DEFAULT_WEBBRIDGE = {
 
 # 图片扩展名，用于数据集类别自动检测
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp", ".gif"}
+
+
+# ---------------------------------------------------------------------------
+# 通用路径工具
+# ---------------------------------------------------------------------------
+
+def project_root() -> Path:
+    """返回项目根目录（本文件位于 autotrain4/ 下）。"""
+    return Path(__file__).parent.parent.resolve()
+
+
+def config_dir() -> Path:
+    """返回配置目录。"""
+    return project_root() / "config"
+
+
+def baseline_dir() -> Path:
+    """返回 baseline 模型目录。"""
+    return project_root() / "Baseline Models"
+
+
+def resolve_path(raw: Union[str, Path]) -> Path:
+    """解析路径：支持环境变量、相对路径转绝对路径。"""
+    expanded = Path(os.path.expandvars(str(raw)))
+    if expanded.is_absolute():
+        return expanded.resolve()
+    return (project_root() / expanded).resolve()
+
+
+def find_latest_config(task_type: str = "") -> Optional[Path]:
+    """查找最新的 auto_latest_*.json 配置文件。"""
+    cfg_dir = config_dir()
+    if not cfg_dir.exists():
+        return None
+    candidates = list(cfg_dir.glob("auto_latest_*.json"))
+    if not candidates:
+        return None
+    if task_type:
+        safe = re.sub(r"[^\w\-]+", "_", task_type)
+        matched = [p for p in candidates if safe in p.name]
+        if matched:
+            return max(matched, key=lambda p: p.stat().st_mtime)
+    return max(candidates, key=lambda p: p.stat().st_mtime)
+
+
+def find_latest_dvp(directory: Union[str, Path]) -> Optional[Path]:
+    """查找目录下最新的 .dvp 文件。"""
+    path = resolve_path(directory)
+    if not path.exists():
+        return None
+    dvps = list(path.glob("*.dvp"))
+    return max(dvps, key=lambda p: p.stat().st_mtime) if dvps else None
+
+
+def find_baseline_model(task_type: str) -> Optional[Path]:
+    """按任务类型在 Baseline Models 目录下找最新的 baseline .dvp。"""
+    base = baseline_dir()
+    if not base.exists():
+        return None
+    prefix = BASELINE_PREFIXES.get(task_type)
+    if not prefix:
+        return None
+    candidates = [
+        p for p in base.glob("*.dvp")
+        if p.name.upper().startswith(prefix.upper() + "-")
+    ]
+    return max(candidates, key=lambda p: p.stat().st_mtime) if candidates else None

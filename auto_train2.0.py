@@ -970,7 +970,6 @@ class DLCVAutoTrainer:
             if hasattr(bridge, "run_training_workflow"):
                 logger.info("导航至项目信息页: %s", project_url)
                 bridge.navigate(project_url)
-                bridge.screenshot("project_info")
 
                 # 记录点击「开始训练」前的最新 training_id，便于之后识别本次新建的 session
                 previous_id = self.discover_training_id(self.project_id)
@@ -981,7 +980,6 @@ class DLCVAutoTrainer:
                 # 兜底：旧版直接跳转到参数页
                 logger.info("导航至训练参数页: %s", param_url)
                 bridge.navigate(param_url)
-                bridge.screenshot("parameter_edit_before")
 
                 previous_id = self.discover_training_id(self.project_id)
                 logger.info("点击开始训练前最新 training_id: %s", previous_id or "无")
@@ -995,7 +993,6 @@ class DLCVAutoTrainer:
                 raise AutoTrainError(f"WebBridge 任务执行失败: {result.message}")
 
             logger.info("WebBridge 任务执行结果: %s", result.message)
-            bridge.screenshot("training_started")
 
             # 等待并识别本次新创建的 training_id
             self.training_id = self._wait_for_new_training_id(previous_id, timeout=60)
@@ -1019,7 +1016,12 @@ class DLCVAutoTrainer:
                     logger.info("收到中断，准备关闭浏览器")
         except WebBridgeError as e:
             logger.error("Kimi WebBridge 调用失败: %s", e)
+            self._save_error_screenshot(bridge, "webbridge_error")
             raise AutoTrainError(f"WebBridge 调用失败: {e}")
+        except Exception as e:
+            logger.exception("WebBridge 自动化发生未预期错误: %s", e)
+            self._save_error_screenshot(bridge, "automation_error")
+            raise
         finally:
             if bridge is not None:
                 try:
@@ -1033,7 +1035,7 @@ class DLCVAutoTrainer:
                 self._bridge = None
 
     def _rename_playwright_video(self, bridge) -> None:
-        """将 Playwright 生成的 <hash>.webm 重命名为 <项目名>_<时间>.webm。"""
+        """将 Playwright 生成的 <hash>.webm 重命名为 run_dir/screen_recording.mp4。"""
         video_path = getattr(bridge, "video_path", None)
         if not video_path:
             return
@@ -1047,13 +1049,27 @@ class DLCVAutoTrainer:
         try:
             target_dir = Path(record_dir)
             target_dir.mkdir(parents=True, exist_ok=True)
-            project_name = self.config.get("project", {}).get("name", "unknown")
-            timestamp = time.strftime("%Y%m%d_%H%M%S")
-            dst = target_dir / f"{project_name}_{timestamp}.webm"
+            # 统一命名为 screen_recording.mp4，方便 run_dir 归档
+            dst = target_dir / "screen_recording.mp4"
+            if dst.exists():
+                dst.unlink()
             src.rename(dst)
             logger.info("录屏文件已保存: %s", dst)
         except Exception as e:
             logger.warning("重命名 Playwright 录屏文件失败: %s", e)
+
+    def _save_error_screenshot(self, bridge, name: str = "error") -> None:
+        """异常发生时自动截取当前页面，保存到 screenshot_dir。"""
+        if bridge is None:
+            return
+        if not hasattr(bridge, "screenshot"):
+            return
+        try:
+            result = bridge.screenshot(name)
+            if result.success and result.screenshot_path:
+                logger.info("错误现场截图已保存: %s", result.screenshot_path)
+        except Exception as e:
+            logger.warning("保存错误现场截图失败: %s", e)
 
     def _keep_browser_active(self) -> None:
         """定期调用，防止 Chromium 因窗口不在前台而节流渲染/定时器，导致录屏画面卡住。"""

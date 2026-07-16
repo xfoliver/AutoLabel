@@ -17,6 +17,7 @@ from .common import DEFAULT_WEBBRIDGE, TASK_TEMPLATES
 from .llm_client import LLMClient
 from .nlu import DATA_AUGMENTATION_OPTIONS, TrainIntent
 from .resolver import DatasetMatch
+from .run_context import RunContext
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +36,7 @@ class ConfigBuilder:
         llm_client: Optional[LLMClient] = None,
         record: bool = True,
         record_dir: str = "./record",
+        run_context: Optional[RunContext] = None,
     ):
         self.intent = intent
         self.match = match
@@ -45,6 +47,7 @@ class ConfigBuilder:
         self.llm = llm_client
         self.record = record
         self.record_dir = record_dir
+        self.run_context = run_context
 
     def build(self) -> Dict[str, Any]:
         """生成完整配置。"""
@@ -58,8 +61,18 @@ class ConfigBuilder:
         if "task_type" not in project or not project["task_type"]:
             project["task_type"] = self.intent.task_type
         project["dataset_dir"] = str(self.match.dataset_dir.resolve())
-        project["work_dir"] = str(self._build_work_dir().resolve())
-        project["dva_file"] = str(self._build_dva_path().resolve())
+
+        # run 级归档目录
+        if self.run_context is not None:
+            run_fragment = self.run_context.as_config_fragment()
+            project.update(run_fragment)
+            project["dva_file"] = str(self.run_context.run_dir / f"{self._build_project_name()}.dva")
+            # 录屏目录也指向 run_dir，训练结束后直接落在这里
+            cfg.setdefault("webbridge", {})["record_video_dir"] = str(self.run_context.run_dir)
+        else:
+            project["work_dir"] = str(self._build_work_dir().resolve())
+            project["dva_file"] = str(self._build_dva_path().resolve())
+
         project.setdefault("description", f"AutoTrain 4.0 {self.intent.task_type} 项目")
 
         # platform 区块
@@ -76,7 +89,11 @@ class ConfigBuilder:
         if self.adapter:
             cfg["webbridge"]["adapter"] = self.adapter
         if self.record:
-            cfg["webbridge"]["record_video_dir"] = self.record_dir
+            # 若已指定 run_dir，录屏/截图目录都保持为 run_dir 子目录，不再覆盖
+            if self.run_context is None:
+                cfg["webbridge"]["record_video_dir"] = self.record_dir
+            else:
+                cfg["webbridge"]["screenshot_dir"] = str(self.run_context.screenshots_dir)
         else:
             cfg["webbridge"].pop("record_video_dir", None)
 

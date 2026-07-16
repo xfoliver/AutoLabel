@@ -6,21 +6,21 @@ LLM 客户端。
     AUTOTRAIN_LLM_API_KEY
     AUTOTRAIN_LLM_MODEL
 
-并提供 DeepSeek 专用入口（默认使用用户指定的 DeepSeek key）。
+或 DeepSeek 专用环境变量：
+    DEEPSEEK_API_KEY
+    DEEPSEEK_MODEL
 """
 
 import json
 import logging
 import os
+import re
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-# DeepSeek 默认配置
 DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 DEEPSEEK_DEFAULT_MODEL = "deepseek-chat"
-# 注意：以下 key 由用户显式提供，如需更换请改环境变量 DEEPSEEK_API_KEY
-DEEPSEEK_DEFAULT_API_KEY = "sk-4fd127b871bb49df82ed5e9f4d40346a"
 
 
 class LLMClient:
@@ -33,7 +33,6 @@ class LLMClient:
         model: Optional[str] = None,
         timeout: int = 60,
     ):
-        # 优先使用显式参数，其次环境变量；都没有时默认回落到 DeepSeek
         self.base_url = (
             base_url
             or os.environ.get("AUTOTRAIN_LLM_BASE_URL", "")
@@ -42,7 +41,7 @@ class LLMClient:
         self.api_key = (
             api_key
             or os.environ.get("AUTOTRAIN_LLM_API_KEY", "")
-            or os.environ.get("DEEPSEEK_API_KEY", DEEPSEEK_DEFAULT_API_KEY)
+            or os.environ.get("DEEPSEEK_API_KEY", "")
         )
         self.model = (
             model
@@ -54,7 +53,6 @@ class LLMClient:
 
     @property
     def available(self) -> bool:
-        """是否配置了可用的 LLM。"""
         return bool(self.base_url and self.api_key)
 
     @classmethod
@@ -64,22 +62,23 @@ class LLMClient:
         model: Optional[str] = None,
         timeout: int = 60,
     ) -> "LLMClient":
-        """创建 DeepSeek 专用 LLM 客户端。"""
         return cls(
             base_url=DEEPSEEK_BASE_URL,
-            api_key=api_key or os.environ.get("DEEPSEEK_API_KEY", DEEPSEEK_DEFAULT_API_KEY),
+            api_key=api_key or os.environ.get("DEEPSEEK_API_KEY", ""),
             model=model or os.environ.get("DEEPSEEK_MODEL", DEEPSEEK_DEFAULT_MODEL),
             timeout=timeout,
         )
 
     def _ensure_client(self) -> Any:
-        """延迟导入并创建 openai 客户端。"""
         if self._client is not None:
             return self._client
         try:
             import openai
         except ImportError as e:
             raise RuntimeError("未安装 openai 包，无法使用 LLM 功能") from e
+
+        if not self.api_key:
+            raise RuntimeError("LLM API key 未配置，请设置 DEEPSEEK_API_KEY 或 AUTOTRAIN_LLM_API_KEY")
 
         self._client = openai.OpenAI(
             base_url=self.base_url,
@@ -89,23 +88,17 @@ class LLMClient:
         return self._client
 
     def chat(self, messages: List[Dict[str, str]], temperature: float = 0.0) -> Optional[str]:
-        """调用 LLM chat completion，返回文本内容。"""
         if not self.available:
             raise RuntimeError("LLM 未配置 base_url / api_key，无法调用")
-        try:
-            client = self._ensure_client()
-            resp = client.chat.completions.create(
-                model=self.model,
-                messages=messages,
-                temperature=temperature,
-            )
-            return resp.choices[0].message.content
-        except Exception as e:
-            logger.warning("LLM 调用失败: %s", e)
-            raise
+        client = self._ensure_client()
+        resp = client.chat.completions.create(
+            model=self.model,
+            messages=messages,
+            temperature=temperature,
+        )
+        return resp.choices[0].message.content
 
     def extract_intent(self, prompt: str) -> Optional[Dict[str, Any]]:
-        """从用户自然语言中提取意图。"""
         system_msg = (
             "你是一个 DLCV 训练平台任务解析助手。请从用户输入中提取以下字段并返回 JSON，"
             "格式如下：\n"
@@ -137,15 +130,11 @@ class LLMClient:
             "8. 如果用户想测试或对比模型，mode 返回 test；想训练则返回 train。\n"
             "9. 只返回 JSON，不要附加说明。"
         )
-        content = self.chat(
-            [
-                {"role": "system", "content": system_msg},
-                {"role": "user", "content": prompt},
-            ]
-        )
-        if not content:
-            return None
-        return self._safe_parse_json(content)
+        content = self.chat([
+            {"role": "system", "content": system_msg},
+            {"role": "user", "content": prompt},
+        ])
+        return self._safe_parse_json(content) if content else None
 
     def select_dataset(
         self,
@@ -153,10 +142,6 @@ class LLMClient:
         intent: Dict[str, Any],
         candidates: List[Dict[str, Any]],
     ) -> Optional[Dict[str, Any]]:
-        """
-        让 LLM 在所有候选数据集中选择最匹配的一项。
-        返回 {"folder": "文件夹名", "reasoning": "..."}。
-        """
         system_msg = (
             "你是 DLCV 训练平台的数据集匹配助手。请根据用户意图，从候选数据集中选出最匹配的一个。\n"
             "返回 JSON 格式：\n"
@@ -175,25 +160,17 @@ class LLMClient:
             f"解析出的意图：{json.dumps(intent, ensure_ascii=False)}\n"
             f"候选数据集：{json.dumps(candidates, ensure_ascii=False)}"
         )
-        content = self.chat(
-            [
-                {"role": "system", "content": system_msg},
-                {"role": "user", "content": user_msg},
-            ]
-        )
-        if not content:
-            return None
-        return self._safe_parse_json(content)
+        content = self.chat([
+            {"role": "system", "content": system_msg},
+            {"role": "user", "content": user_msg},
+        ])
+        return self._safe_parse_json(content) if content else None
 
     def match_categories(
         self,
         user_categories: List[str],
         dataset_categories: List[str],
     ) -> Optional[Dict[str, Optional[str]]]:
-        """
-        让 LLM 判断用户类别与数据集类别的对应关系。
-        返回 {user_cat: dataset_cat_or_None}。
-        """
         if not self.available or not user_categories or not dataset_categories:
             return None
         system_msg = (
@@ -205,30 +182,21 @@ class LLMClient:
             f"用户类别：{json.dumps(user_categories, ensure_ascii=False)}\n"
             f"数据集类别：{json.dumps(dataset_categories, ensure_ascii=False)}"
         )
-        content = self.chat(
-            [
-                {"role": "system", "content": system_msg},
-                {"role": "user", "content": user_msg},
-            ]
-        )
-        if not content:
-            return None
-        parsed = self._safe_parse_json(content)
+        content = self.chat([
+            {"role": "system", "content": system_msg},
+            {"role": "user", "content": user_msg},
+        ])
+        parsed = self._safe_parse_json(content) if content else None
         if not parsed:
             return None
-        # 只保留有效映射
         return {k: v if v in dataset_categories else None for k, v in parsed.items()}
 
     @staticmethod
     def _safe_parse_json(text: str) -> Optional[Dict[str, Any]]:
-        """从可能包含 markdown 代码块的文本中安全解析 JSON。"""
-        # 尝试直接解析
         try:
             return json.loads(text)
         except json.JSONDecodeError:
             pass
-        # 尝试提取 ```json ... ``` 块
-        import re
 
         m = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
         if m:
@@ -236,12 +204,13 @@ class LLMClient:
                 return json.loads(m.group(1))
             except json.JSONDecodeError:
                 pass
-        # 尝试提取最后一个 { ... }
+
         m = re.search(r"(\{.*\})", text, re.DOTALL)
         if m:
             try:
                 return json.loads(m.group(1))
             except json.JSONDecodeError:
                 pass
+
         logger.warning("LLM 返回内容 JSON 解析失败: %s", text[:200])
         return None

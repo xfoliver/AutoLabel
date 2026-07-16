@@ -662,7 +662,7 @@ class MainWindow(QMainWindow):
             )
 
     def _on_train_finished(
-        self, code: int, elapsed: float, training_completed: bool = False
+        self, code: int, elapsed: float, training_completed: bool = False, run_dir: str = ""
     ) -> None:
         self.close_browser_btn.setEnabled(False)
 
@@ -673,6 +673,7 @@ class MainWindow(QMainWindow):
             else:
                 self._append_log(f"[完成] 进程退出码: {code}，耗时 {elapsed} 秒")
                 self._set_status("失败", "error")
+            self._show_run_dir_popup(run_dir, success=False)
             return
 
         # 成功结束：仅「真正完成模型训练」才弹 post-train 选择窗
@@ -680,11 +681,23 @@ class MainWindow(QMainWindow):
         if training_completed:
             self._append_log(f"[完成] 训练成功，耗时 {elapsed} 秒")
             self._set_status("训练成功", "success")
+            self._show_run_dir_popup(run_dir, success=True)
             self._offer_post_train_actions()
         else:
             self._append_log(f"[完成] 任务结束，耗时 {elapsed} 秒（非训练流程，跳过后续选择）")
             self.start_btn.setEnabled(True)
             self._set_status("成功", "success")
+            self._show_run_dir_popup(run_dir, success=True)
+
+    def _show_run_dir_popup(self, run_dir: str, success: bool = True) -> None:
+        if not run_dir:
+            return
+        tip = QMessageBox(self)
+        tip.setWindowTitle("训练信息已保存" if success else "训练失败")
+        tip.setIcon(QMessageBox.Information if success else QMessageBox.Warning)
+        tip.setText(f"本次训练信息已保存到：\n{run_dir}")
+        tip.setStandardButtons(QMessageBox.Ok)
+        tip.exec_()
 
     def _offer_post_train_actions(self) -> None:
         """仅在模型训练成功后弹出后续操作选择（自定义蓝紫弹窗）。"""
