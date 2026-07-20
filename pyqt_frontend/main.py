@@ -19,7 +19,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from PyQt5.QtCore import QPoint, Qt
+from PyQt5.QtCore import QEvent, QPoint, Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import QColor, QFont, QPalette
 from PyQt5.QtWidgets import (
     QApplication,
@@ -38,6 +38,146 @@ from PyQt5.QtWidgets import (
 )
 
 from backend import PostTrainWorker, TrainWorker, resolve_post_train_context
+from suggestions import SmartSuggestionEngine as SuggestionEngine
+
+
+# ---------------------------------------------------------------------------
+# 可点击建议标签（替代 QPushButton，避免透明背景下的渲染异常）
+# ---------------------------------------------------------------------------
+class ClickableLabel(QLabel):
+    """可点击的建议标签，行为类似 Bubble，但渲染更稳定。"""
+
+    clicked = pyqtSignal(str)
+
+    def __init__(self, text: str, parent: Optional[QWidget] = None) -> None:
+        super().__init__(text, parent)
+        self.setObjectName("suggestionChip")
+        self.setCursor(Qt.PointingHandCursor)
+        self.setMaximumWidth(160)
+        self.setToolTip(text)
+        self._text = text
+
+    def mouseReleaseEvent(self, event) -> None:
+        if event.button() == Qt.LeftButton:
+            self.clicked.emit(self._text)
+        super().mouseReleaseEvent(event)
+
+
+# ---------------------------------------------------------------------------
+# 阶段式折叠日志面板
+# ---------------------------------------------------------------------------
+class LogStage(QWidget):
+    """单个可折叠日志阶段。"""
+
+    def __init__(self, title: str, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self._title = title
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(4)
+        layout.setContentsMargins(0, 0, 0, 6)
+
+        self._header = QPushButton(f"▼ {title}")
+        self._header.setObjectName("logStageHeader")
+        self._header.setCursor(Qt.PointingHandCursor)
+        self._header.setFocusPolicy(Qt.NoFocus)
+        self._header.clicked.connect(self._toggle)
+        layout.addWidget(self._header)
+
+        self._content = QTextEdit()
+        self._content.setObjectName("logStageContent")
+        self._content.setReadOnly(True)
+        self._content.setMinimumHeight(80)
+        layout.addWidget(self._content)
+
+    def append(self, line: str) -> None:
+        self._content.append(line)
+        scrollbar = self._content.verticalScrollBar()
+        scrollbar.setValue(scrollbar.maximum())
+
+    def _toggle(self) -> None:
+        visible = not self._content.isVisible()
+        self._content.setVisible(visible)
+        prefix = "▼" if visible else "▶"
+        self._header.setText(f"{prefix} {self._title}")
+
+    def set_expanded(self, expanded: bool) -> None:
+        self._content.setVisible(expanded)
+        prefix = "▼" if expanded else "▶"
+        self._header.setText(f"{prefix} {self._title}")
+
+
+class CollapsibleLogPanel(QWidget):
+    """阶段式折叠日志面板：按阶段分组，每组可折叠。"""
+
+    _STAGE_MARKERS = [
+        (r"={5,}\s*(.+?)\s*={5,}", lambda m: m.group(1).strip()),
+        (r"\[新运行\].*", lambda m: "新运行"),
+        (r"\[开始\].*", lambda m: "开始"),
+        (r"\[完成\].*", lambda m: "完成"),
+        (r"\[错误\].*", lambda m: "错误"),
+        (r"\[训练后\].*", lambda m: "训练后"),
+    ]
+
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self._stages: list[LogStage] = []
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(0)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setAlignment(Qt.AlignTop)
+        self.setLayout(layout)
+
+        self._layout = layout
+        self._current_stage: Optional[LogStage] = None
+
+    def clear(self) -> None:
+        for stage in self._stages:
+            stage.deleteLater()
+        self._stages.clear()
+        self._current_stage = None
+
+    def append(self, line: str) -> None:
+        title = self._detect_stage_title(line)
+        if title:
+            self._start_stage(title)
+
+        if self._current_stage is None:
+            self._start_stage("日志")
+
+        self._current_stage.append(line)
+
+    def _detect_stage_title(self, line: str) -> Optional[str]:
+        import re
+
+        for pattern, extractor in self._STAGE_MARKERS:
+            match = re.search(pattern, line)
+            if match:
+                return extractor(match)[:40] or "阶段"
+        return None
+
+    def _start_stage(self, title: str) -> None:
+        # 如果当前阶段还是空的“日志”占位，直接复用
+        if self._current_stage is not None and self._title_of(self._current_stage) == "日志":
+            content = self._current_stage._content.toPlainText().strip()
+            if not content:
+                self._current_stage._title = title
+                self._current_stage._header.setText(f"▼ {title}")
+                return
+
+        # 把之前的阶段折叠起来
+        for stage in self._stages:
+            stage.set_expanded(False)
+
+        stage = LogStage(title, self)
+        self._stages.append(stage)
+        self._layout.addWidget(stage)
+        self._current_stage = stage
+
+    @staticmethod
+    def _title_of(stage: LogStage) -> str:
+        return stage._title
 
 
 # ---------------------------------------------------------------------------
@@ -373,6 +513,16 @@ class MainWindow(QMainWindow):
         self.worker: Optional[TrainWorker] = None
         self.post_worker: Optional[PostTrainWorker] = None
 
+        from autotrain4.llm_client import LLMClient
+
+        self.suggestion_engine = SuggestionEngine(llm_client=LLMClient())
+        self.suggestion_engine.on_llm_result(self._on_llm_suggestions)
+
+        self._ime_composing = False
+        self._suggestion_debounce = QTimer(self)
+        self._suggestion_debounce.setSingleShot(True)
+        self._suggestion_debounce.timeout.connect(self._do_update_suggestions)
+
         self._setup_ui()
         self._apply_styles()
 
@@ -406,7 +556,24 @@ class MainWindow(QMainWindow):
             "例如：训练一个 cls 模型来辨别王不留行和白芷"
         )
         self.prompt_input.setMaximumHeight(120)
+        self.prompt_input.textChanged.connect(self._on_input_text_changed)
+        self.prompt_input.installEventFilter(self)
         layout.addWidget(self.prompt_input)
+
+        # 猜你想说 建议气泡区
+        self.suggestions_label = QLabel("猜你想说")
+        self.suggestions_label.setObjectName("suggestionsLabel")
+        layout.addWidget(self.suggestions_label)
+
+        self.suggestions_container = QWidget()
+        self.suggestions_container.setObjectName("suggestionsContainer")
+        self.suggestions_container.setMinimumHeight(42)
+        self.suggestions_container.setMaximumHeight(42)
+        self.suggestions_layout = QHBoxLayout(self.suggestions_container)
+        self.suggestions_layout.setSpacing(10)
+        self.suggestions_layout.setContentsMargins(0, 0, 0, 0)
+        self.suggestions_layout.setAlignment(Qt.AlignLeft)
+        layout.addWidget(self.suggestions_container)
 
         # 按钮区
         btn_layout = QHBoxLayout()
@@ -443,10 +610,13 @@ class MainWindow(QMainWindow):
         log_header.addWidget(self.status_label)
         layout.addLayout(log_header)
 
-        self.log_output = QTextEdit()
-        self.log_output.setObjectName("logOutput")
-        self.log_output.setReadOnly(True)
-        layout.addWidget(self.log_output)
+        self.log_panel = CollapsibleLogPanel()
+        self.log_panel.setObjectName("logPanel")
+        self.log_panel.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        layout.addWidget(self.log_panel)
+
+        # 初始化建议气泡（空输入时显示默认建议）
+        self._do_update_suggestions()
 
         # 底部说明
         footer = QLabel(
@@ -495,6 +665,29 @@ class MainWindow(QMainWindow):
                 border: 2px solid #667eea;
                 background-color: #ffffff;
                 color: #1f2937;
+            }
+            QLabel#suggestionsLabel {
+                font-size: 18px;
+                font-weight: bold;
+                color: #374151;
+                margin-top: 8px;
+                margin-bottom: 4px;
+            }
+            QWidget#suggestionsContainer {
+                background: transparent;
+            }
+            QLabel#suggestionChip {
+                background-color: rgba(255, 255, 255, 0.12);
+                color: #ffffff;
+                font-size: 13px;
+                font-weight: 500;
+                border: 1px solid rgba(255, 255, 255, 0.25);
+                border-radius: 16px;
+                padding: 6px 14px;
+            }
+            QLabel#suggestionChip:hover {
+                background-color: rgba(255, 255, 255, 0.24);
+                border: 1px solid rgba(255, 255, 255, 0.40);
             }
             QPushButton#startBtn {
                 background: qlineargradient(
@@ -558,13 +751,32 @@ class MainWindow(QMainWindow):
                 border-radius: 12px;
                 padding: 6px 14px;
             }
-            QTextEdit#logOutput {
+            QWidget#logPanel {
                 background: #f9fafb;
                 border: 1px solid #e5e7eb;
                 border-radius: 16px;
-                padding: 16px;
+                padding: 12px;
+            }
+            QPushButton#logStageHeader {
+                background: transparent;
+                color: #374151;
+                font-size: 14px;
+                font-weight: bold;
+                border: none;
+                border-radius: 8px;
+                padding: 8px 4px;
+                text-align: left;
+            }
+            QPushButton#logStageHeader:hover {
+                background: rgba(102, 126, 234, 0.10);
+            }
+            QTextEdit#logStageContent {
+                background: #ffffff;
+                border: 1px solid #e5e7eb;
+                border-radius: 10px;
+                padding: 10px;
                 font-family: "Consolas", "SFMono-Regular", monospace;
-                font-size: 16px;
+                font-size: 14px;
                 color: #1f2937;
             }
             QLabel#footer {
@@ -581,6 +793,101 @@ class MainWindow(QMainWindow):
         palette.setColor(QPalette.PlaceholderText, QColor("#9ca3af"))
         self.prompt_input.setPalette(palette)
 
+    def _on_input_text_changed(self) -> None:
+        """输入框内容变化时触发防抖。中文 IME 组字期间不刷新，英文输入实时刷新。"""
+        self._suggestion_debounce.stop()
+        if self._ime_composing:
+            return
+        self._suggestion_debounce.start(400)
+
+    def eventFilter(self, obj, event):
+        """监听 IME 组字事件，确保在组字期间不读取/刷新输入框。"""
+        if obj is self.prompt_input and event.type() == QEvent.InputMethod:
+            preedit = event.preeditString()
+            commit = event.commitString()
+
+            if preedit:
+                self._ime_composing = True
+                self._suggestion_debounce.stop()
+            else:
+                was_composing = self._ime_composing
+                self._ime_composing = False
+                if commit or was_composing:
+                    QTimer.singleShot(50, self._do_update_suggestions)
+
+        elif obj is self.prompt_input and event.type() == event.KeyPress:
+            if event.key() == Qt.Key_Return or event.key() == Qt.Key_Enter:
+                self._suggestion_debounce.stop()
+                self._do_update_suggestions()
+        return super().eventFilter(obj, event)
+
+    def _do_update_suggestions(self) -> None:
+        """Refresh suggestion chips based on input text."""
+        if self._ime_composing:
+            return
+        text = self.prompt_input.toPlainText()
+        suggestions = self.suggestion_engine.suggest(text)
+        self._render_suggestions(suggestions)
+
+    def _on_llm_suggestions(self, text: str, suggestions: list) -> None:
+        """LLM 异步建议到达时，与本地建议混合后渲染。"""
+        current = self.prompt_input.toPlainText()
+        if current.strip().lower() != text.strip().lower():
+            return
+
+        def _blend_and_render():
+            local = self.suggestion_engine.suggest(current)
+            blended: list = []
+            seen: set = set()
+            for s in suggestions + local:
+                key = s.strip()
+                if key and key not in seen:
+                    seen.add(key)
+                    blended.append(key)
+            self._render_suggestions(blended[:5])
+
+        QTimer.singleShot(0, _blend_and_render)
+
+    def _render_suggestions(self, suggestions: list) -> None:
+        """Render suggestion chip buttons inline below input."""
+        while self.suggestions_layout.count():
+            item = self.suggestions_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+
+        cleaned: list = []
+        for phrase in suggestions[:5]:
+            phrase = phrase.strip().replace("\n", " ").replace("\r", "")
+            phrase = "".join(ch for ch in phrase if ch.isprintable() or ch in " ")
+            phrase = phrase.strip()[:24]
+            if phrase:
+                cleaned.append(phrase)
+
+        if not cleaned:
+            self.suggestions_container.setVisible(False)
+            return
+
+        self.suggestions_container.setVisible(True)
+        for phrase in cleaned:
+            lbl = ClickableLabel(phrase)
+            lbl.clicked.connect(self._apply_suggestion)
+            self.suggestions_layout.addWidget(lbl)
+
+        self.suggestions_layout.addStretch()
+
+    def _apply_suggestion(self, suggestion: str) -> None:
+        """Append suggestion to input and refresh."""
+        self._suggestion_debounce.stop()
+        current = self.prompt_input.toPlainText()
+        new_text = self.suggestion_engine.take_suggestion(current, suggestion)
+        self.prompt_input.setPlainText(new_text)
+        cursor = self.prompt_input.textCursor()
+        cursor.movePosition(cursor.End)
+        self.prompt_input.setTextCursor(cursor)
+        self.prompt_input.setFocus()
+        self._do_update_suggestions()
+
     def _start_run(self) -> None:
         prompt = self.prompt_input.toPlainText().strip()
         if not prompt:
@@ -592,8 +899,8 @@ class MainWindow(QMainWindow):
         if self.post_worker and self.post_worker.isRunning():
             self.post_worker.stop()
 
-        self.log_output.append("=" * 60)
-        self.log_output.append(f"[新运行] {time.strftime('%Y-%m-%d %H:%M:%S')}")
+        self.log_panel.clear()
+        self.log_panel.append(f"[新运行] {time.strftime('%Y-%m-%d %H:%M:%S')}")
         self.start_btn.setEnabled(False)
         self.close_browser_btn.setEnabled(False)
         self._set_status("运行中", "running")
@@ -621,14 +928,12 @@ class MainWindow(QMainWindow):
         self.close_browser_btn.setEnabled(False)
 
     def _clear_logs(self) -> None:
-        self.log_output.clear()
+        self.log_panel.clear()
         self._set_status("就绪", "")
         self.close_browser_btn.setEnabled(False)
 
     def _append_log(self, line: str) -> None:
-        self.log_output.append(line)
-        scrollbar = self.log_output.verticalScrollBar()
-        scrollbar.setValue(scrollbar.maximum())
+        self.log_panel.append(line)
 
     def _set_status(self, text: str, style_class: str) -> None:
         self.status_label.setText(text)
