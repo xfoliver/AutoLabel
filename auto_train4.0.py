@@ -31,7 +31,6 @@ import json
 import logging
 import subprocess
 import sys
-import time
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
@@ -47,8 +46,9 @@ from autotrain4.inference_client import InferenceClient
 from autotrain4.judge import RequirementJudge
 from autotrain4.llm_client import LLMClient
 from autotrain4.nlu import IntentParser, TrainIntent
+from autotrain4.output_protocol import encode_chat_response
 from autotrain4.resolver import DatasetResolver
-from autotrain4.run_context import RunContext
+from autotrain4.run_context import RunContext, cleanup_run_artifacts
 
 # 在 Windows Git Bash / CMD / PowerShell 中保持中文日志不乱码
 if sys.platform == "win32" and sys.stdout.encoding not in ("utf-8", "UTF-8"):
@@ -128,6 +128,8 @@ class AutoTrain4Orchestrator:
                 if ret != 0:
                     logger.error("任务 %d/%d 执行失败，继续执行后续任务", idx, total)
                     failed_tasks.append(intent.task_type)
+                else:
+                    logger.info("任务 %d/%d 执行成功，继续执行后续任务", idx, total)
             except Exception as e:
                 logger.exception("任务 %d/%d 发生异常，继续执行后续任务: %s", idx, total, e)
                 failed_tasks.append(intent.task_type)
@@ -184,6 +186,8 @@ class AutoTrain4Orchestrator:
             self.match,
             project_root=self.project_root,
             adapter=self.args.adapter,
+            cdp_port=self.args.cdp_port,
+            platform_exe=self.args.platform_exe,
             full_train=self.args.full_train,
             adjustments=judge_result.adjustments,
             llm_client=self.llm,
@@ -191,8 +195,9 @@ class AutoTrain4Orchestrator:
             record_dir=self.args.record_dir,
             run_context=self.run_ctx,
         )
-        self.config_path = builder.save(self.args.config_out)
-        self.run_ctx.save_config(builder.build())
+        config = builder.build()
+        self.config_path = builder.save(self.args.config_out, config=config)
+        self.run_ctx.save_config(config)
 
         if self.args.generate_config_only:
             logger.info("任务 %d/%d --generate-config-only: 已生成配置，不启动训练", task_index, task_total)
@@ -229,6 +234,7 @@ class AutoTrain4Orchestrator:
         return resolver.resolve(
             intent,
             auto_threshold=self.args.auto_threshold,
+            task_context=self._build_task_context(intent),
         )
 
     def _run_auto_train2(
@@ -236,28 +242,55 @@ class AutoTrain4Orchestrator:
         task_index: int = 1,
         task_total: int = 1,
     ) -> int:
-        """调用 auto_train2.0.py 执行训练。"""
-        cmd = [
-            sys.executable,
-            str(self.project_root / "auto_train2.0.py"),
-            "--config",
-            str(self.config_path),
-        ]
-        if self.args.force_new:
-            cmd.append("--force-new")
-        if self.args.dry_run:
-            cmd.append("--dry-run")
-        if self.args.keep_alive:
-            cmd.append("--keep-alive")
-        if self.args.keep_browser_open is False:
-            cmd.append("--no-keep-browser-open")
-        if self.args.reuse:
-            cmd.append("--reuse")
+        """调用 auto_train2.0.py 执行训练。
+
+        多任务批量时，中间任务不保持平台或等待用户交互；最后一个任务
+        保留用户指定的 keep-alive / keep-browser-open 行为。
+        """
+        cmd = self._build_auto_train2_command(task_index, task_total)
+        is_batch = task_total > 1
+        is_last = task_index >= task_total
+        keep_alive = "--keep-alive" in cmd
+        keep_browser_open = "--keep-browser-open" in cmd
+        reuse = "--reuse" in cmd
+
+        if is_batch:
+            logger.info(
+                "批量任务 %d/%d 策略: force-new=on, keep-alive=%s, keep-browser-open=%s, reuse=%s",
+                task_index,
+                task_total,
+                keep_alive,
+                keep_browser_open,
+                reuse,
+            )
 
         logger.info("========== AUTO TRAIN 4.0 -> 2.0 (任务 %d/%d) ==========", task_index, task_total)
         logger.info("启动子进程: %s", " ".join(cmd))
 
-        result = subprocess.run(cmd, check=False)
+        # 每个任务用独立的关闭信号文件，避免上一个任务残留的 close signal
+        # 让下一个任务的 keep-open 等待立刻返回、或误杀流程
+        env = os.environ.copy()
+        env["PYTHONIOENCODING"] = "utf-8"
+        # 批量任务间强制清理可能残留的关闭信号
+        if is_batch:
+            env.pop("AUTOTRAIN_CLOSE_SIGNAL", None)
+
+        result = subprocess.run(cmd, check=False, env=env)
+
+        cleanup = cleanup_run_artifacts(
+            self.run_ctx.run_dir,
+            success=result.returncode == 0,
+        )
+        logger.info(
+            "任务 %d/%d 归档清理完成: effective_success=%s, removed=%s",
+            task_index,
+            task_total,
+            cleanup["effective_success"],
+            cleanup["removed"],
+        )
+        for warning in cleanup["warnings"]:
+            logger.warning("任务 %d/%d 归档清理提示: %s", task_index, task_total, warning)
+
         if result.returncode != 0:
             if getattr(self, "run_ctx", None):
                 self.run_ctx.save_exception(
@@ -267,11 +300,42 @@ class AutoTrain4Orchestrator:
             return result.returncode
 
         # 训练成功后，通过 LLM 询问用户是否生成 inference report / 与 baseline 对比
-        if self.args.post_train:
+        # 批量中间任务跳过交互，避免卡住后续任务
+        if self.args.post_train and (is_last or not is_batch):
             self._interactive_post_train()
         else:
-            logger.info("--no-post-train 已设置，跳过训练后交互")
+            if is_batch and not is_last:
+                logger.info("批量任务 %d/%d 非末任务，跳过训练后交互", task_index, task_total)
+            else:
+                logger.info("--no-post-train 已设置，跳过训练后交互")
         return 0
+
+    def _build_auto_train2_command(self, task_index: int, task_total: int) -> List[str]:
+        """构造 auto_train2.0.py 命令；只传递子脚本实际支持的参数。"""
+        is_batch = task_total > 1
+        is_last = task_index >= task_total
+        cmd = [
+            sys.executable,
+            str(self.project_root / "auto_train2.0.py"),
+            "--config",
+            str(self.config_path),
+        ]
+        if self.args.force_new or is_batch:
+            cmd.append("--force-new")
+        if self.args.dry_run:
+            cmd.append("--dry-run")
+
+        # auto_train2.0.py 中 keep-alive/reuse 是默认关闭的 store_true 参数，
+        # 因此关闭时不要传入不存在的 --no-keep-alive / --no-reuse。
+        if bool(self.args.keep_alive) and (is_last or not is_batch):
+            cmd.append("--keep-alive")
+        if bool(self.args.keep_browser_open) and (is_last or not is_batch):
+            cmd.append("--keep-browser-open")
+        else:
+            cmd.append("--no-keep-browser-open")
+        if bool(self.args.reuse) and not is_batch:
+            cmd.append("--reuse")
+        return cmd
 
     def _run_test_latest(self) -> int:
         """对最近一次训练的模型，用训练集作为测试集跑推理。"""
@@ -379,8 +443,8 @@ class AutoTrain4Orchestrator:
             "本项目的训练文件结构如下：",
             "每次训练会在 <项目文件夹>/work/<任务类型-时间戳>/ 目录下生成一个 run 目录。",
             "例如：AI训练平台测试/1-OCR/work/1-OCR-20260716_150004/",
-            "run 目录下通常包含：screen_recording.mp4（录屏）、screenshots/（截图）、config.json（配置）、",
-            "stdout.log/stderr.log/train.log（日志）、*.dva/*.dvp（模型文件）、checkpoints/（检查点）。",
+            "成功 run 主要保留 config.json、runtime_info.json、train.log 和 *.dva/*.dvp。",
+            "失败 run 还会保留 exception.json、stderr.log、截图、录屏和最后一个检查点用于复现。",
             "",
             "最近的训练运行目录：",
         ]
@@ -408,11 +472,14 @@ class AutoTrain4Orchestrator:
         try:
             answer = self.llm.chat(messages)
             if answer:
-                logger.info("[助手回复] %s", answer)
                 messages.append({"role": "assistant", "content": answer})
                 self._save_chat_history(messages)
+                logger.info("通用对话回复已生成（%d 字符）", len(answer))
+                print(encode_chat_response(answer), flush=True)
             else:
-                logger.info("[助手回复] 抱歉，我没有理解你的问题，可以再说一次吗？")
+                fallback = "抱歉，我没有理解你的问题，可以再说一次吗？"
+                logger.info("通用对话未返回内容，使用兜底回复")
+                print(encode_chat_response(fallback), flush=True)
         except Exception as e:
             logger.error("通用对话调用 LLM 失败: %s", e)
             return 1
@@ -607,7 +674,7 @@ class AutoTrain4Orchestrator:
             decision = json.loads(parse_resp.strip())
         except Exception as e:
             logger.warning("解析训练后需求失败: %s", e)
-            print(f"[POST_TRAIN_RESULT] 无法解析需求，不执行后续操作")
+            print("[POST_TRAIN_RESULT] 无法解析需求，不执行后续操作")
             return
 
         action = decision.get("action", "exit")
@@ -713,8 +780,18 @@ def main() -> int:
     )
     parser.add_argument(
         "--adapter",
-        choices=["playwright", "skill", "http", "stub"],
+        choices=["playwright", "webview2_cdp", "skill", "http", "stub"],
         help="覆盖 WebBridge adapter 类型",
+    )
+    parser.add_argument(
+        "--platform-exe",
+        help="壳端 EXE 路径（webview2_cdp 模式使用）",
+    )
+    parser.add_argument(
+        "--cdp-port",
+        type=int,
+        default=9222,
+        help="WebView2 CDP 调试端口（默认 9222）",
     )
     parser.add_argument(
         "--auto-threshold",

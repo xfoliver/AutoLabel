@@ -297,77 +297,88 @@ class PlaywrightWebBridgeAdapter(BaseWebBridge):
         从项目信息页开始，按菜单顺序完成：
         数据分析 → 数据增强（如需要）→ 训练参数 → 开始训练。
         """
-        self._ensure_page()
 
-        # 1. 数据分析
+        # 1. 数据分析（可选步骤，失败时跳过，不影响训练启动）
         if ui_flow.get("data_analysis", True):
-            self._log_step("点击侧边菜单：数据分析")
-            self._click_sidebar("数据分析")
-            self._sleep_step(2.0)
+            try:
+                self._log_step("点击侧边菜单：数据分析")
+                self._click_sidebar_with_fallbacks(["数据分析", "数据", "分析", "Data Analysis"])
+                self._sleep_step(2.0)
 
-            self._log_step("点击：加载数据集")
-            self._click_text("加载数据集")
-            self._wait_loading_done(timeout=60)
-            self._sleep_step(1.0)
+                self._log_step("点击：加载数据集")
+                self._click_text_with_fallbacks(["加载数据集", "加载", "Load Dataset"])
+                self._wait_loading_done(timeout=60)
+                self._sleep_step(1.0)
 
-            self._log_step("等待并点击：图像分布旁边的加载尺寸分布")
-            self._wait_for_text("图像分布", timeout=30)
-            self._click_near_anchor("加载尺寸分布", "图像分布")
-            self._wait_loading_done(timeout=60)
-            self._sleep_step(1.0)
+                self._log_step("等待并点击：图像分布旁边的加载尺寸分布")
+                self._wait_for_text("图像分布", timeout=30)
+                self._click_near_anchor("加载尺寸分布", "图像分布")
+                self._wait_loading_done(timeout=60)
+                self._sleep_step(1.0)
+            except WebBridgeError as e:
+                self._log_step(f"数据分析步骤失败，跳过: {e}")
+                self._take_debug_screenshot("data_analysis_skipped")
 
-        # 2. 数据增强
+        # 2. 数据增强（可选步骤，失败时跳过）
         aug_options = ui_flow.get("data_augmentation", [])
         if aug_options:
-            self._log_step("点击侧边菜单：数据增强")
-            self._click_sidebar("数据增强")
-            self._sleep_step(2.0)
+            try:
+                self._log_step("点击侧边菜单：数据增强")
+                self._click_sidebar("数据增强")
+                self._sleep_step(2.0)
 
-            self._log_step("点击页面上的数据增强按钮，打开增强策略弹窗")
-            self._click_page_button("数据增强")
-            self._sleep_step(2.0)
-
-            # 等待增强策略弹窗渲染出来（以第一个选项为标志）
-            first_opt = self._normalize_augmentation_name(aug_options[0])
-            if first_opt:
-                self._wait_for_text(first_opt, timeout=10)
-
-            for opt in aug_options:
-                normalized = self._normalize_augmentation_name(opt)
-                if not normalized:
-                    self._log_step(f"跳过未识别的增强选项: {opt}")
-                    continue
-                self._log_step(f"勾选数据增强：{normalized}")
-                self._check_augmentation_option(normalized)
-                self._sleep_step(0.8)
-
-            self._log_step("点击数据增强弹窗确认/保存")
-            # 可能先弹确认窗，再弹"数据增强操作已修改,是否保存"，需要连续处理
-            for _ in range(3):
-                try:
-                    self._click_dialog_confirm(["保存", "确定", "确认", "是", "Yes", "OK"])
-                except WebBridgeError:
-                    break
+                self._log_step("点击页面上的数据增强按钮，打开增强策略弹窗")
+                self._open_augmentation_dialog(aug_options)
                 self._sleep_step(1.0)
-                # 检查是否还有弹窗
-                try:
-                    has_dialog = self._page.evaluate(
-                        """() => !!document.querySelector('.el-message-box, .ant-modal, [role=dialog], .modal, .dialog')"""
-                    )
-                    if not has_dialog:
+
+                for opt in aug_options:
+                    normalized = self._normalize_augmentation_name(opt)
+                    if not normalized:
+                        self._log_step(f"跳过未识别的增强选项: {opt}")
+                        continue
+                    self._log_step(f"勾选数据增强：{normalized}")
+                    self._check_augmentation_option(normalized)
+                    self._sleep_step(0.8)
+
+                self._log_step("点击数据增强弹窗确认/保存")
+                # 可能先弹确认窗，再弹"数据增强操作已修改,是否保存"，需要连续处理
+                for _ in range(3):
+                    try:
+                        self._click_dialog_confirm(["保存", "确定", "确认", "是", "Yes", "OK"])
+                    except WebBridgeError:
                         break
+                    self._sleep_step(1.0)
+                    # 检查是否还有弹窗
+                    try:
+                        has_dialog = self._page.evaluate(
+                            """() => !!document.querySelector('.el-message-box, .ant-modal, [role=dialog], .modal, .dialog')"""
+                        )
+                        if not has_dialog:
+                            break
+                    except Exception:
+                        break
+                self._sleep_step(1.5)
+
+                # 选择完数据增强后，点击页面右下角的保存按钮（会触发二次确认弹窗）
+                self._log_step("点击数据增强页面右下角保存按钮")
+                self._click_page_button("保存")
+                self._sleep_step(2.0)
+
+                self._log_step("处理保存后的确认弹窗")
+                self._handle_confirm_dialog()
+                self._sleep_step(1.0)
+            except WebBridgeError as e:
+                self._log_step(f"数据增强步骤失败，跳过: {e}")
+                self._take_debug_screenshot("data_augmentation_skipped")
+                # 如果弹窗还开着，尝试点取消/关闭把它关掉，避免阻塞后续步骤
+                self._dismiss_any_dialog()
+                # 再按 Esc 兜底，避免残留遮罩卡住后续「训练参数」点击
+                try:
+                    self._page.keyboard.press("Escape")
+                    self._sleep_step(0.5)
+                    self._page.keyboard.press("Escape")
                 except Exception:
-                    break
-            self._sleep_step(1.5)
-
-            # 选择完数据增强后，点击页面右下角的保存按钮（会触发二次确认弹窗）
-            self._log_step("点击数据增强页面右下角保存按钮")
-            self._click_page_button("保存")
-            self._sleep_step(2.0)
-
-            self._log_step("处理保存后的确认弹窗")
-            self._handle_confirm_dialog()
-            self._sleep_step(1.0)
+                    pass
 
         # 3. 训练参数
         self._log_step("点击侧边菜单：训练参数")
@@ -642,6 +653,45 @@ class PlaywrightWebBridgeAdapter(BaseWebBridge):
         except WebBridgeError:
             pass
 
+    def _dismiss_any_dialog(self) -> None:
+        """尝试关闭任何可能阻塞操作的弹窗：先确认/保存，再取消/关闭，最后按 Esc。"""
+        for attempt in range(3):
+            try:
+                has_dialog = self._page.evaluate(
+                    """() => !!document.querySelector('.el-message-box, .ant-modal, [role=dialog], .modal, .dialog, [class*="dialog"], [class*="modal"]')"""
+                )
+                if not has_dialog:
+                    return
+            except Exception:
+                return
+
+            # 先尝试页面任意位置的确认类按钮
+            for kw in ["保存", "确定", "确认", "是", "Yes", "OK", "Apply"]:
+                try:
+                    self._click_text(kw)
+                    self._sleep_step(0.5)
+                    break
+                except WebBridgeError:
+                    continue
+            else:
+                # 再尝试取消/关闭类按钮
+                for kw in ["取消", "关闭", "Close", "Cancel", "No"]:
+                    try:
+                        self._click_text(kw)
+                        self._sleep_step(0.5)
+                        break
+                    except WebBridgeError:
+                        continue
+                else:
+                    # 兜底：发送 Escape 键
+                    try:
+                        self._page.keyboard.press("Escape")
+                        self._sleep_step(0.5)
+                    except Exception:
+                        pass
+
+        self._log_step("警告: 未能关闭弹窗，将继续执行后续步骤")
+
     def _click_dialog_confirm(self, candidates: Optional[List[str]] = None) -> None:
         """
         在弹出的 dialog 里点击确认按钮。
@@ -755,6 +805,16 @@ class PlaywrightWebBridgeAdapter(BaseWebBridge):
             return
         raise WebBridgeError(result.get("error") or f"点击 {text} 失败")
 
+    def _click_text_with_fallbacks(self, texts: List[str], timeout_per_text: int = 15) -> str:
+        """依次尝试多个文本，返回成功点击的文案。"""
+        for text in texts:
+            try:
+                self._click_text(text)
+                return text
+            except WebBridgeError:
+                self._log_step(f"文本 '{text}' 未找到，尝试下一个")
+        raise WebBridgeError(f"未找到任何文本: {texts}")
+
     def _click_near_anchor(self, target: str, anchor: str) -> None:
         """在 anchor 文字所在的区域里点击 target 文字对应的元素。"""
         js_code = f"""
@@ -820,9 +880,9 @@ class PlaywrightWebBridgeAdapter(BaseWebBridge):
     def _set_checkbox_by_text(self, text: str, checked: bool) -> None:
         """通过包含文本定位 checkbox（支持数据增强面板中的选项）。"""
         try:
-            locator = self._page.locator(
-                f'input[type="checkbox"]'
-            ).filter(has=self._page.locator(f"text={text}"))
+            locator = self._page.locator('input[type="checkbox"]').filter(
+                has=self._page.locator(f"text={text}")
+            )
             if locator.count() == 0:
                 locator = self._page.get_by_text(text, exact=False).locator('xpath=..').locator('input[type="checkbox"]')
             if locator.count() > 0:
@@ -882,19 +942,67 @@ class PlaywrightWebBridgeAdapter(BaseWebBridge):
             time.sleep(0.3)
         raise WebBridgeError(f"等待文字出现超时: {text}")
 
-    def _click_sidebar(self, text: str) -> None:
-        """点击侧边栏菜单项，优先滚动到可见区域再点。"""
-        try:
-            # 侧边栏通常是 aside / nav / menu 里的文字
-            locator = self._page.locator("aside, nav, [class*='menu'], [class*='sidebar']").get_by_text(text, exact=False)
-            if locator.count() > 0:
-                locator.first.scroll_into_view_if_needed(timeout=5000)
-                locator.first.click(timeout=10000)
+    def _click_sidebar(self, text: str, timeout: int = 30) -> None:
+        """点击侧边栏菜单项，优先滚动到可见区域再点；未出现时先等待。"""
+        start = time.time()
+        last_error = ""
+        while time.time() - start < timeout:
+            try:
+                # 侧边栏通常是 aside / nav / menu 里的文字
+                locator = self._page.locator("aside, nav, [class*='menu'], [class*='sidebar']").get_by_text(text, exact=False)
+                if locator.count() > 0:
+                    locator.first.scroll_into_view_if_needed(timeout=5000)
+                    locator.first.click(timeout=10000)
+                    return
+            except Exception as e:
+                last_error = str(e)
+            # 兜底：页面任何位置出现该文字也点
+            try:
+                self._click_text(text)
                 return
-        except Exception:
-            pass
-        # 兜底用通用文本点击
-        self._click_text(text)
+            except Exception as e:
+                last_error = str(e)
+            time.sleep(0.5)
+        raise WebBridgeError(f"侧边栏菜单 '{text}' 未在 {timeout}s 内出现: {last_error}")
+
+    def _click_sidebar_with_fallbacks(
+        self, texts: List[str], timeout_per_text: int = 15
+    ) -> str:
+        """依次尝试多个侧边栏文案，返回成功点击的文案。"""
+        for text in texts:
+            try:
+                self._click_sidebar(text, timeout=timeout_per_text)
+                return text
+            except WebBridgeError:
+                self._log_step(f"菜单文案 '{text}' 未找到，尝试下一个")
+        raise WebBridgeError(f"未找到任何菜单文案: {texts}")
+
+    def _log_diagnostic(self, message: str) -> None:
+        """输出页面诊断信息并截图，便于排查找不到元素的问题。"""
+        self._log_step(message)
+        if self._page is None:
+            return
+        try:
+            url = self._page.url
+            title = self._page.title()
+            self._log_step(f"诊断: url={url!r}, title={title!r}")
+            # 截取页面可见文本前 500 字
+            visible_text = self._page.evaluate(
+                "() => (document.body.innerText || '').trim().slice(0, 500)"
+            )
+            self._log_step(f"诊断: 页面文本片段: {visible_text!r}")
+        except Exception as e:
+            self._log_step(f"诊断: 获取页面信息失败: {e}")
+        try:
+            import time as _time
+            from pathlib import Path
+            ts = _time.strftime("%Y%m%d_%H%M%S")
+            path = Path(self.screenshot_dir) / f"diagnostic_{ts}.png"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            self._page.screenshot(path=str(path), full_page=True)
+            self._log_step(f"诊断截图已保存: {path}")
+        except Exception as e:
+            self._log_step(f"诊断截图保存失败: {e}")
 
     def _ensure_parameter_page(self, timeout: int = 30) -> None:
         """确保当前已经在训练参数页，否则点击侧边栏训练参数并等待。"""
@@ -915,22 +1023,109 @@ class PlaywrightWebBridgeAdapter(BaseWebBridge):
             time.sleep(1.0)
         raise WebBridgeError("未能进入训练参数页")
 
+    def _open_augmentation_dialog(self, aug_options: List[str]) -> None:
+        """
+        打开数据增强策略弹窗。
+        优先点主内容区「数据增强」按钮；若失败再尝试其它常见入口。
+        成功条件：出现任一增强选项文字，或出现 dialog/modal。
+        """
+        markers: List[str] = []
+        for opt in aug_options or []:
+            normalized = self._normalize_augmentation_name(opt)
+            if normalized and normalized not in markers:
+                markers.append(normalized)
+        for opt in self.DATA_AUGMENTATION_OPTIONS:
+            if opt not in markers:
+                markers.append(opt)
+
+        openers = [
+            ("page_button", lambda: self._click_page_button("数据增强")),
+            ("text", lambda: self._click_text("数据增强")),
+            ("near_anchor", lambda: self._click_near_anchor("数据增强", "数据增强策略")),
+            ("add_strategy", lambda: self._click_text_with_fallbacks(
+                ["添加策略", "新增策略", "选择策略", "增强策略", "编辑策略"]
+            )),
+        ]
+
+        last_error = ""
+        for name, action in openers:
+            try:
+                self._log_step(f"尝试打开增强弹窗: {name}")
+                action()
+            except Exception as e:
+                last_error = str(e)
+                continue
+
+            # 等待弹窗或选项出现
+            deadline = time.time() + 8
+            while time.time() < deadline:
+                try:
+                    state = self._page.evaluate(
+                        """(markers) => {
+                            const hasDialog = !!document.querySelector(
+                              '.el-dialog, .el-message-box, .ant-modal, [role=dialog], .modal, .dialog, [class*="dialog"], [class*="modal"]'
+                            );
+                            const body = (document.body && document.body.innerText) || '';
+                            const hit = markers.find(m => body.includes(m)) || null;
+                            return {hasDialog, hit};
+                        }""",
+                        markers[:12],
+                    )
+                    if state and (state.get("hasDialog") or state.get("hit")):
+                        self._log_step(
+                            f"增强弹窗已打开 (dialog={state.get('hasDialog')}, hit={state.get('hit')})"
+                        )
+                        return
+                except Exception as e:
+                    last_error = str(e)
+                time.sleep(0.3)
+
+        self._take_debug_screenshot("augmentation_dialog_open_failed")
+        raise WebBridgeError(f"无法打开数据增强策略弹窗: {last_error}")
+
     def _check_augmentation_option(self, option: str, checked: bool = True) -> None:
         """
         在数据增强弹窗中勾选/取消某个增强策略。
         兼容 Element UI 的自定义 checkbox（小正方形）以及原生 checkbox。
         若当前弹窗没有该选项，则跳过并记录警告，避免任务中断。
         """
+        # 给弹窗多一点渲染时间；找不到就跳过，不要整段失败
+        deadline = time.time() + 4
+        while time.time() < deadline and not self._is_text_visible(option):
+            time.sleep(0.25)
         if not self._is_text_visible(option):
             print(f"[PlaywrightWebBridge] 数据增强弹窗中未找到选项 '{option}'，跳过")
             return
 
-        js_code = f"""
+        js_code = """
         (args) => {{
             const text = args[0];
             const wantChecked = args[1];
-            const all = Array.from(document.querySelectorAll('*'));
-            const labelEl = all.find(el => Array.from(el.childNodes).some(n => n.nodeType === 3 && n.textContent.trim().includes(text)));
+
+            // 优先在可见弹窗内找，避免点到页面其它同名文案
+            const dialogs = Array.from(document.querySelectorAll(
+              '.el-dialog, .el-message-box, .ant-modal, [role=dialog], .modal, .dialog, [class*="dialog"], [class*="modal"]'
+            )).filter(d => {{
+              const style = window.getComputedStyle(d);
+              return style && style.display !== 'none' && style.visibility !== 'hidden';
+            }});
+            const roots = dialogs.length ? dialogs : [document.body];
+
+            let labelEl = null;
+            for (const root of roots) {{
+              const all = Array.from(root.querySelectorAll('*'));
+              labelEl = all.find(el =>
+                Array.from(el.childNodes).some(n => n.nodeType === 3 && n.textContent.trim().includes(text))
+              );
+              if (labelEl) break;
+            }}
+            if (!labelEl) {{
+              // 最后再全局找一次
+              const all = Array.from(document.querySelectorAll('*'));
+              labelEl = all.find(el =>
+                Array.from(el.childNodes).some(n => n.nodeType === 3 && n.textContent.trim().includes(text))
+              );
+            }}
             if (!labelEl) return {{error: 'text not found: ' + text}};
 
             // 1. 优先找 Element UI 风格的 el-checkbox
@@ -975,10 +1170,13 @@ class PlaywrightWebBridgeAdapter(BaseWebBridge):
             return {{ok: true, type: 'native'}};
         }}
         """
+        js_code = js_code.replace("{{", "{").replace("}}", "}")
         result = self._page.evaluate(js_code, [option, checked])
         if isinstance(result, dict) and result.get("ok"):
             return
-        raise WebBridgeError(result.get("error") or f"勾选 {option} 失败")
+        # 找不到控件时跳过，而不是中断整个训练流
+        self._log_step(f"勾选 {option} 失败，跳过: {result.get('error') if isinstance(result, dict) else result}")
+        return
 
     def _normalize_augmentation_name(self, raw: str) -> Optional[str]:
         """把用户/LLM 返回的增强名归一化为标准选项。"""

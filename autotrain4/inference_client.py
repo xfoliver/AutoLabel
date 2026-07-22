@@ -66,7 +66,6 @@ class InferenceClient:
 
     def get_version(self, timeout: float = 10.0) -> Dict[str, Any]:
         """调用真实版本接口确认推理服务在线且已 ready。"""
-        total_start = time.time()
         last_error: Optional[Exception] = None
         last_status_code: Optional[int] = None
 
@@ -106,7 +105,6 @@ class InferenceClient:
                 last_error = e
                 logger.debug("版本接口 %s 不可用: %s", endpoint, e)
 
-        total_elapsed = time.time() - total_start
         raise InferenceError(
             f"推理服务未 ready，请检查 backend / 模型测试 API "
             f"(url={self.base_url}, status={last_status_code}, error={last_error})"

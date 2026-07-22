@@ -15,7 +15,7 @@ from typing import Any, Dict, Optional
 
 from .common import DEFAULT_WEBBRIDGE, TASK_TEMPLATES
 from .llm_client import LLMClient
-from .nlu import DATA_AUGMENTATION_OPTIONS, TrainIntent
+from .nlu import TrainIntent
 from .resolver import DatasetMatch
 from .run_context import RunContext
 
@@ -31,6 +31,8 @@ class ConfigBuilder:
         match: DatasetMatch,
         project_root: Optional[Path] = None,
         adapter: Optional[str] = None,
+        cdp_port: Optional[int] = None,
+        platform_exe: Optional[str] = None,
         full_train: bool = False,
         adjustments: Optional[Dict[str, Any]] = None,
         llm_client: Optional[LLMClient] = None,
@@ -42,6 +44,8 @@ class ConfigBuilder:
         self.match = match
         self.project_root = project_root or Path(__file__).parent.parent.resolve()
         self.adapter = adapter
+        self.cdp_port = cdp_port
+        self.platform_exe = platform_exe
         self.full_train = full_train
         self.adjustments = adjustments or {}
         self.llm = llm_client
@@ -56,7 +60,8 @@ class ConfigBuilder:
 
         # project 区块
         project = cfg.setdefault("project", {})
-        project["name"] = self._build_project_name()
+        project_name = self._build_project_name()
+        project["name"] = project_name
         # DETR 模板底层 task_type 是 目标检测，保留模板值；其余用意图解析值
         if "task_type" not in project or not project["task_type"]:
             project["task_type"] = self.intent.task_type
@@ -66,7 +71,7 @@ class ConfigBuilder:
         if self.run_context is not None:
             run_fragment = self.run_context.as_config_fragment()
             project.update(run_fragment)
-            project["dva_file"] = str(self.run_context.run_dir / f"{self._build_project_name()}.dva")
+            project["dva_file"] = str(self.run_context.run_dir / f"{project_name}.dva")
             # 录屏目录也指向 run_dir，训练结束后直接落在这里
             cfg.setdefault("webbridge", {})["record_video_dir"] = str(self.run_context.run_dir)
         else:
@@ -88,6 +93,8 @@ class ConfigBuilder:
             cfg["webbridge"] = dict(DEFAULT_WEBBRIDGE)
         if self.adapter:
             cfg["webbridge"]["adapter"] = self.adapter
+        if self.cdp_port is not None:
+            cfg["webbridge"]["cdp_port"] = self.cdp_port
         if self.record:
             # 若已指定 run_dir，录屏/截图目录都保持为 run_dir 子目录，不再覆盖
             if self.run_context is None:
@@ -96,6 +103,10 @@ class ConfigBuilder:
                 cfg["webbridge"]["screenshot_dir"] = str(self.run_context.screenshots_dir)
         else:
             cfg["webbridge"].pop("record_video_dir", None)
+
+        # platform 区块：壳端 EXE 路径
+        if self.platform_exe:
+            cfg.setdefault("platform", {})["executable_path"] = self.platform_exe
 
         # dataset 区块：保留 auto_detect，同时可记录匹配到的类别
         dataset_cfg = cfg.setdefault("dataset", {})
@@ -106,8 +117,8 @@ class ConfigBuilder:
 
         # ui_flow 区块：把数据分析和数据增强的决策固化到配置里
         ui_flow = cfg.setdefault("ui_flow", {})
-        ui_flow.setdefault("data_analysis", self.intent.data_analysis)
-        ui_flow.setdefault("data_augmentation", self.intent.data_augmentation)
+        ui_flow["data_analysis"] = self.intent.data_analysis
+        ui_flow["data_augmentation"] = list(self.intent.data_augmentation)
 
         # training 区块：根据数据量做轻量调整
         training = cfg.setdefault("training", {})
@@ -119,29 +130,50 @@ class ConfigBuilder:
             hp["train_set_val"] = 100
             logger.info("启用全量训练模式: train_set_val=100")
 
-        # LLM 顾问：根据用户意图推荐超参和数据增强方案
+        # LLM 顾问只推荐超参。数据增强属于用户任务意图，不允许跨任务扩写。
         self._apply_llm_advice(cfg)
 
         # 应用 DeepSeek 判断层给出的修正建议
         if self.adjustments:
-            cfg = self._deep_merge(cfg, self.adjustments)
+            self._apply_adjustments(cfg)
             logger.info("已应用 DeepSeek 调整建议: %s", self.adjustments)
 
         return cfg
 
-    @staticmethod
-    def _deep_merge(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
-        """深度合并两个字典，override 覆盖 base。"""
-        result = dict(base)
-        for key, value in override.items():
-            if isinstance(value, dict) and isinstance(result.get(key), dict):
-                result[key] = ConfigBuilder._deep_merge(result[key], value)
-            else:
-                result[key] = value
-        return result
+    def _apply_adjustments(self, cfg: Dict[str, Any]) -> None:
+        """把评审建议映射到配置的有效区块，忽略未知顶层字段。"""
+        project = cfg.setdefault("project", {})
+        training_hp = cfg.setdefault("training", {}).setdefault("hyperparameters", {})
+
+        def update_known_hyperparameters(values: Any) -> None:
+            if not isinstance(values, dict):
+                return
+            unknown = set(values) - set(training_hp)
+            if unknown:
+                logger.warning("忽略未知训练超参建议: %s", sorted(unknown))
+            training_hp.update({key: value for key, value in values.items() if key in training_hp})
+
+        project_name = self.adjustments.get("project_name")
+        description = self.adjustments.get("description")
+        hyperparameters = self.adjustments.get("hyperparameters")
+        if project_name:
+            project["name"] = str(project_name)
+        if description:
+            project["description"] = str(description)
+        update_known_hyperparameters(hyperparameters)
+
+        nested_project = self.adjustments.get("project")
+        if isinstance(nested_project, dict):
+            for key in ("name", "description"):
+                if nested_project.get(key):
+                    project[key] = nested_project[key]
+
+        nested_training = self.adjustments.get("training")
+        if isinstance(nested_training, dict):
+            update_known_hyperparameters(nested_training.get("hyperparameters"))
 
     def _apply_llm_advice(self, cfg: Dict[str, Any]) -> None:
-        """调用 LLM 顾问推荐超参和数据增强方案并合并到配置中。"""
+        """调用 LLM 顾问推荐训练超参并合并到配置中。"""
         if not self.llm or not self.llm.available:
             return
 
@@ -149,27 +181,21 @@ class ConfigBuilder:
 
         training = cfg.setdefault("training", {})
         base_hp = training.get("hyperparameters", {})
-        ui_flow = cfg.setdefault("ui_flow", {})
-
         system_msg = (
             "你是 DLCV AI 训练平台的资深训练工程师。请根据用户意图、数据集信息和当前默认超参，"
-            "推荐最合适的训练超参数和数据增强方案。\n"
+            "推荐最合适的训练超参数。\n"
             "返回 JSON 格式：\n"
             "{\n"
             '  "hyperparameters": {"max_epochs": 12, "batch_size": 8, "lr": 0.001, ...},\n'
-            '  "data_augmentation": ["随机翻转", "随机裁剪"],\n'
             '  "reasoning": "简要说明"\n'
             "}\n"
             "注意：\n"
             "1. hyperparameters 只返回需要调整的关键字段，不需要的字段不出现。\n"
-            "2. data_augmentation 可选：调整图像大小、随机比例缩放、随机翻转、随机固定角度旋转、"
-            "随机裁剪、随机调整亮度、随机调整对比度、随机JPG编码。\n"
-            "3. 如果用户没有明确提到且任务不需要，data_augmentation 返回空列表。\n"
-            "4. 只返回 JSON，不要附加说明。"
+            "2. 不要修改或推荐数据增强，数据增强已由当前任务的结构化意图确定。\n"
+            "3. 只返回 JSON，不要附加说明。"
         )
         user_msg = (
-            f"用户原始输入：{self.intent.raw_prompt}\n"
-            f"解析意图：{_json.dumps(self.intent.to_dict(), ensure_ascii=False)}\n"
+            f"当前任务意图：{_json.dumps(self.intent.to_task_dict(), ensure_ascii=False)}\n"
             f"数据集信息：{_json.dumps(self.match.to_dict(), ensure_ascii=False)}\n"
             f"当前默认超参：{_json.dumps(base_hp, ensure_ascii=False)}"
         )
@@ -194,45 +220,20 @@ class ConfigBuilder:
             return
 
         recommended_hp = parsed.get("hyperparameters") or {}
-        recommended_aug = parsed.get("data_augmentation", [])
-        reasoning = str(parsed.get("reasoning", ""))
 
-        if recommended_hp:
+        if isinstance(recommended_hp, dict) and recommended_hp:
             hp = training.setdefault("hyperparameters", {})
             for key, value in recommended_hp.items():
                 hp[key] = value
             logger.info("LLM 顾问推荐超参: %s", recommended_hp)
 
-        # 只有当用户明确提到数据增强时，才接受 LLM 顾问推荐的增强方案；
-        # 否则保持 ui_flow 中已有的设置（通常为空），避免前端误点增强菜单。
-        if recommended_aug and self.intent.mentions_augmentation:
-            normalized = self._normalize_augmentation_options(recommended_aug)
-            if normalized:
-                ui_flow["data_augmentation"] = normalized
-                logger.info("LLM 顾问推荐数据增强: %s (%s)", normalized, reasoning)
-
-    @staticmethod
-    def _normalize_augmentation_options(raw: Any) -> list:
-        """归一化 LLM 返回的增强选项。"""
-        if not raw:
-            return []
-        if isinstance(raw, str):
-            raw = [raw]
-        result: List[str] = []
-        for item in raw:
-            text = str(item).strip().replace("随即", "随机")
-            if not text:
-                continue
-            for option in DATA_AUGMENTATION_OPTIONS:
-                if option.lower() in text.lower() or text.lower() in option.lower():
-                    if option not in result:
-                        result.append(option)
-                    break
-        return result
-
-    def save(self, config_path: Optional[Path] = None) -> Path:
+    def save(
+        self,
+        config_path: Optional[Path] = None,
+        config: Optional[Dict[str, Any]] = None,
+    ) -> Path:
         """保存配置并返回路径。"""
-        cfg = self.build()
+        cfg = config if config is not None else self.build()
         if config_path is None:
             config_dir = self.project_root / "config"
             config_dir.mkdir(parents=True, exist_ok=True)

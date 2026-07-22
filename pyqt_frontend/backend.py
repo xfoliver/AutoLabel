@@ -23,7 +23,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from PyQt5.QtCore import QThread, pyqtSignal
+from PyQt5.QtCore import QObject, QThread, pyqtSignal
 
 # 保证能 import 项目根下的 autotrain4
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
@@ -35,13 +35,14 @@ if load_dotenv is not None:
     if _dotenv_path.exists():
         load_dotenv(dotenv_path=_dotenv_path, override=True)
 
-from autotrain4.common import (
+from autotrain4.common import (  # noqa: E402
     baseline_dir,
     find_baseline_model,
     find_latest_config,
     find_latest_dvp,
     resolve_path,
 )
+from autotrain4.output_protocol import decode_chat_response  # noqa: E402
 
 AUTO_TRAIN = PROJECT_ROOT / "auto_train4.0.py"
 DEFAULT_INFERENCE_URL = "http://127.0.0.1:9890"
@@ -101,6 +102,7 @@ class TrainWorker(QThread):
     """后台工作线程：运行 auto_train4.0.py 并实时返回日志。"""
 
     log_received = pyqtSignal(str)
+    chat_response = pyqtSignal(str)
     status_changed = pyqtSignal(str, str)
     # return_code, elapsed_seconds, training_completed, run_dir
     finished_signal = pyqtSignal(int, float, bool, str)
@@ -120,9 +122,19 @@ class TrainWorker(QThread):
         "--dry-run: 已生成 .dva",
     )
 
-    def __init__(self, prompt: str, parent: Optional["QObject"] = None) -> None:  # type: ignore[name-defined]
+    def __init__(
+        self,
+        prompt: str,
+        settings: Optional[Dict[str, str]] = None,
+        parent: Optional[QObject] = None,
+    ) -> None:
         super().__init__(parent)
         self.prompt = prompt
+        self.settings = settings or {}
+        self.llm_settings = {
+            k: v for k, v in (settings or {}).items()
+            if k.startswith("llm_")
+        }
         self._running = True
         self.process: Optional[subprocess.Popen] = None
         self._close_prompted = False
@@ -134,7 +146,6 @@ class TrainWorker(QThread):
         )
         self.run_dir: Optional[Path] = None
         self.train_log_path: Optional[Path] = None
-        self.stdout_log_path: Optional[Path] = None
         self.stderr_log_path: Optional[Path] = None
         self.exception_path: Optional[Path] = None
 
@@ -151,9 +162,27 @@ class TrainWorker(QThread):
             self.prompt,
             "--no-post-train",
         ]
+
+        adapter = self.settings.get("adapter", "playwright")
+        if adapter:
+            cmd.extend(["--adapter", adapter])
+        if adapter == "webview2_cdp":
+            cdp_port = self.settings.get("cdp_port", "9222")
+            platform_exe = self.settings.get("platform_exe", "")
+            cmd.extend(["--cdp-port", str(cdp_port)])
+            if platform_exe:
+                cmd.extend(["--platform-exe", platform_exe])
         env = os.environ.copy()
         env["PYTHONIOENCODING"] = "utf-8"
         env["AUTOTRAIN_CLOSE_SIGNAL"] = str(self._close_signal_path)
+
+        # 注入用户在 UI 设置的 LLM 配置（如果填写了）
+        if self.llm_settings.get("llm_base_url"):
+            env["AUTOTRAIN_LLM_BASE_URL"] = self.llm_settings["llm_base_url"]
+        if self.llm_settings.get("llm_api_key"):
+            env["AUTOTRAIN_LLM_API_KEY"] = self.llm_settings["llm_api_key"]
+        if self.llm_settings.get("llm_model"):
+            env["AUTOTRAIN_LLM_MODEL"] = self.llm_settings["llm_model"]
 
         try:
             self.process = subprocess.Popen(
@@ -222,8 +251,13 @@ class TrainWorker(QThread):
         if not line:
             return
 
+        chat_response = decode_chat_response(line)
+        if chat_response is not None:
+            self.chat_response.emit(chat_response)
+            return
+
         # 捕获 [RUN_DIR] 标记，初始化本地日志文件
-        if self.run_dir is None and line.startswith("[RUN_DIR] "):
+        if line.startswith("[RUN_DIR] "):
             run_dir = Path(line[len("[RUN_DIR] "):].strip())
             if run_dir.exists():
                 self._init_run_logs(run_dir)
@@ -243,7 +277,6 @@ class TrainWorker(QThread):
     def _init_run_logs(self, run_dir: Path) -> None:
         self.run_dir = run_dir
         self.train_log_path = run_dir / "train.log"
-        self.stdout_log_path = run_dir / "stdout.log"
         self.stderr_log_path = run_dir / "stderr.log"
         self.exception_path = run_dir / "exception.json"
 
@@ -254,10 +287,9 @@ class TrainWorker(QThread):
                     f.write(line + "\n")
             except Exception:
                 pass
-        target = self.stderr_log_path if is_stderr else self.stdout_log_path
-        if target:
+        if is_stderr and self.stderr_log_path:
             try:
-                with open(target, "a", encoding="utf-8", errors="replace") as f:
+                with open(self.stderr_log_path, "a", encoding="utf-8", errors="replace") as f:
                     f.write(line + "\n")
             except Exception:
                 pass
@@ -343,7 +375,7 @@ class PostTrainWorker(QThread):
         action: str,
         context: Dict[str, Any],
         inference_url: str = DEFAULT_INFERENCE_URL,
-        parent: Optional["QObject"] = None,  # type: ignore[name-defined]
+        parent: Optional[QObject] = None,
     ) -> None:
         super().__init__(parent)
         self.action = action

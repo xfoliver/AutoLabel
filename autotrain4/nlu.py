@@ -8,7 +8,6 @@
 import logging
 import re
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from .common import TASK_ALIASES
@@ -59,6 +58,12 @@ class TrainIntent:
             "baseline_model": self.baseline_model,
             "wants_baseline": self.wants_baseline,
         }
+
+    def to_task_dict(self) -> Dict[str, Any]:
+        """返回供单任务下游使用的意图，避免原始多任务提示词串扰。"""
+        data = self.to_dict()
+        data.pop("raw_prompt", None)
+        return data
 
 
 class IntentParser:

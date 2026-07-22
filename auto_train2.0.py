@@ -38,6 +38,7 @@ import time
 import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import urlparse
 
 import psutil
 import requests
@@ -372,45 +373,6 @@ class DLCVAutoTrainer:
                 targets[proc.pid] = proc
         return list(targets.values())
 
-    def _kill_process_tree(self, proc: psutil.Process, killed_pids: set) -> None:
-        if proc.pid in killed_pids:
-            return
-        try:
-            children = proc.children(recursive=True)
-            for child in children:
-                if child.pid in killed_pids:
-                    continue
-                try:
-                    logger.info("终止子进程: %s (PID %s)", child.name(), child.pid)
-                    child.terminate()
-                except Exception as e:
-                    logger.debug("终止子进程 %s 失败: %s", child.pid, e)
-
-            _, alive = psutil.wait_procs(children, timeout=3)
-            for child in alive:
-                if child.pid in killed_pids:
-                    continue
-                try:
-                    logger.warning("强制结束子进程: %s (PID %s)", child.name(), child.pid)
-                    child.kill()
-                    killed_pids.add(child.pid)
-                except Exception:
-                    pass
-
-            logger.info("终止进程: %s (PID %s)", proc.name(), proc.pid)
-            proc.terminate()
-            proc.wait(timeout=5)
-            killed_pids.add(proc.pid)
-        except psutil.NoSuchProcess:
-            killed_pids.add(proc.pid)
-        except Exception as e:
-            logger.warning("终止进程 %s 失败: %s，尝试强制结束", proc.pid, e)
-            try:
-                proc.kill()
-                killed_pids.add(proc.pid)
-            except Exception:
-                pass
-
     def kill_conflicts(self) -> None:
         """清理平台、后端以及端口占用进程，确保干净启动。"""
         targets = self._get_target_processes()
@@ -419,12 +381,55 @@ class DLCVAutoTrainer:
             return
 
         killed_pids: set = set()
+        # 先并行 terminate 所有目标及其子进程，再统一等待，避免串行 5s 超时叠加
+        all_procs: List[psutil.Process] = []
         for proc in targets:
-            self._kill_process_tree(proc, killed_pids)
+            if proc.pid in killed_pids:
+                continue
+            try:
+                children = proc.children(recursive=True)
+                for child in children:
+                    if child.pid not in killed_pids:
+                        all_procs.append(child)
+                all_procs.append(proc)
+            except psutil.NoSuchProcess:
+                killed_pids.add(proc.pid)
+
+        # 统一发 terminate
+        for p in all_procs:
+            if p.pid in killed_pids:
+                continue
+            try:
+                logger.info("终止进程: %s (PID %s)", p.name(), p.pid)
+                p.terminate()
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                killed_pids.add(p.pid)
+            except Exception as e:
+                logger.debug("终止进程 %s 失败: %s", p.pid, e)
+
+        # 统一等 1s，还活着的强制 kill
+        _, alive = psutil.wait_procs(all_procs, timeout=1)
+        for p in alive:
+            if p.pid in killed_pids:
+                continue
+            try:
+                logger.warning("强制结束进程: %s (PID %s)", p.name(), p.pid)
+                p.kill()
+                killed_pids.add(p.pid)
+            except Exception:
+                pass
+
+        # 把已消失的也记为已处理
+        for p in all_procs:
+            try:
+                if not p.is_running():
+                    killed_pids.add(p.pid)
+            except Exception:
+                killed_pids.add(p.pid)
 
         if killed_pids:
             logger.info("已清理 %s 个冲突进程，等待端口释放...", len(killed_pids))
-            time.sleep(3)
+            time.sleep(1)
 
     @staticmethod
     def _extract_port(url: str) -> Optional[int]:
@@ -436,7 +441,7 @@ class DLCVAutoTrainer:
     # ------------------------------------------------------------------
     # 启动平台
     # ------------------------------------------------------------------
-    def launch_platform(self, dva_path: Path) -> None:
+    def launch_platform(self, dva_path: Path, extra_env: Optional[Dict[str, str]] = None) -> None:
         """启动 AI 训练平台桌面应用，并传入 .dva 文件。"""
         exe_path = Path(os.path.expandvars(self.config["platform"]["executable_path"])).resolve()
         if not exe_path.exists():
@@ -448,12 +453,17 @@ class DLCVAutoTrainer:
         logger.info("启动 AI 训练平台: %s", exe_path)
         logger.info("传入 .dva 参数: %s", dva_path)
 
-
         log_dir = Path(self.config.get("project", {}).get("work_dir", "./")).resolve()
         log_dir.mkdir(parents=True, exist_ok=True)
         self.platform_output_log = log_dir / "platform_output.log"
         self.platform_output_log.write_text("", encoding="utf-8")  # 清空/创建
         logger.info("平台控制台输出将保存到: %s", self.platform_output_log)
+
+        env = os.environ.copy()
+        if extra_env:
+            env.update(extra_env)
+            for k, v in extra_env.items():
+                logger.info("注入环境变量: %s=%s", k, v)
 
         try:
             self.platform_output_fh = open(self.platform_output_log, "a", encoding="utf-8", errors="replace")
@@ -463,6 +473,7 @@ class DLCVAutoTrainer:
                 shell=False,
                 stdout=self.platform_output_fh,
                 stderr=subprocess.STDOUT,
+                env=env,
                 creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == "win32" else 0,
             )
         except Exception as e:
@@ -537,8 +548,40 @@ class DLCVAutoTrainer:
         self._dump_platform_output_tail()
         raise AutoTrainError(f"后端服务在 {timeout}s 内未就绪: {self.backend_url}")
 
-    def wait_frontend_ready(self) -> None:
+    def is_cdp_ready(self, cdp_port: int, timeout: float = 2.0) -> bool:
+        """检查 WebView2 CDP 调试端口是否就绪。"""
+        import urllib.request
+        try:
+            with urllib.request.urlopen(
+                f"http://127.0.0.1:{cdp_port}/json/version", timeout=timeout
+            ) as resp:
+                return resp.status == 200
+        except Exception:
+            return False
+
+    def wait_cdp_ready(self, cdp_port: int) -> None:
+        """轮询等待 WebView2 CDP 端口就绪。"""
         cfg = self.config.get("webbridge", {})
+        timeout = int(cfg.get("frontend_ready_timeout", 60))
+        interval = float(cfg.get("frontend_ready_interval", 1.0))
+        logger.info("等待 WebView2 CDP 端口就绪: 127.0.0.1:%s (超时 %ss)", cdp_port, timeout)
+        start = time.time()
+        while time.time() - start < timeout:
+            if self.is_cdp_ready(cdp_port, timeout=2.0):
+                logger.info("CDP 端口已就绪")
+                return
+            time.sleep(interval)
+        raise AutoTrainError(f"WebView2 CDP 端口在 {timeout}s 内未就绪: 127.0.0.1:{cdp_port}")
+
+    def wait_frontend_ready(self) -> None:
+        """轮询等待前端 dev server 或 WebView2 CDP 端口就绪。"""
+        cfg = self.config.get("webbridge", {})
+        adapter = cfg.get("adapter", "playwright").lower()
+        if adapter == "webview2_cdp":
+            cdp_port = int(cfg.get("cdp_port", 9222))
+            self.wait_cdp_ready(cdp_port)
+            return
+
         timeout = int(cfg.get("frontend_ready_timeout", 60))
         interval = float(cfg.get("frontend_ready_interval", 1.0))
         logger.info("等待前端服务就绪: %s (超时 %ss)", self.frontend_url, timeout)
@@ -553,23 +596,35 @@ class DLCVAutoTrainer:
     # ------------------------------------------------------------------
     # 后端 API 封装
     # ------------------------------------------------------------------
-    def _api_get(self, path: str, params: Optional[Dict] = None, timeout: int = 30) -> Dict:
+    def _api_get(self, path: str, params: Optional[Dict] = None, timeout: int = 30, retries: int = 3) -> Dict:
         url = f"{self.backend_url}{path}"
-        try:
-            resp = requests.get(url, params=params, timeout=timeout)
-            resp.raise_for_status()
-            return resp.json()
-        except requests.RequestException as e:
-            raise AutoTrainError(f"API 请求失败 [{url}]: {e}")
+        last_err = None
+        for attempt in range(retries):
+            try:
+                resp = requests.get(url, params=params, timeout=timeout)
+                resp.raise_for_status()
+                return resp.json()
+            except requests.RequestException as e:
+                last_err = e
+                if attempt < retries - 1:
+                    logger.warning("API GET 失败，%ss 后重试 (%d/%d): %s", 2 ** attempt, attempt + 1, retries, e)
+                    time.sleep(2 ** attempt)
+        raise AutoTrainError(f"API 请求失败 [{url}]: {last_err}")
 
-    def _api_post(self, path: str, params: Optional[Dict] = None, json_data: Any = None, timeout: int = 30) -> Dict:
+    def _api_post(self, path: str, params: Optional[Dict] = None, json_data: Any = None, timeout: int = 30, retries: int = 3) -> Dict:
         url = f"{self.backend_url}{path}"
-        try:
-            resp = requests.post(url, params=params, json=json_data, timeout=timeout)
-            resp.raise_for_status()
-            return resp.json()
-        except requests.RequestException as e:
-            raise AutoTrainError(f"API 请求失败 [{url}]: {e}")
+        last_err = None
+        for attempt in range(retries):
+            try:
+                resp = requests.post(url, params=params, json=json_data, timeout=timeout)
+                resp.raise_for_status()
+                return resp.json()
+            except requests.RequestException as e:
+                last_err = e
+                if attempt < retries - 1:
+                    logger.warning("API POST 失败，%ss 后重试 (%d/%d): %s", 2 ** attempt, attempt + 1, retries, e)
+                    time.sleep(2 ** attempt)
+        raise AutoTrainError(f"API 请求失败 [{url}]: {last_err}")
 
     def _api_put(self, path: str, json_data: Any, timeout: int = 30) -> Dict:
         url = f"{self.backend_url}{path}"
@@ -718,7 +773,7 @@ class DLCVAutoTrainer:
             return None
 
     TERMINAL_STATUSES = {"已完成", "训练失败", "训练中止", "未知错误"}
-    STARTED_STATUSES = {"排队中", "已启动", "进行中"}
+    STARTED_STATUSES = {"已启动", "进行中"}
 
     def monitor_training(self) -> None:
         """轮询训练状态直到完成/失败/中止。"""
@@ -780,18 +835,29 @@ class DLCVAutoTrainer:
             if has_started and not status.get("project_id") and not current_training_id:
                 final_status = self._fetch_session_status(self.training_id)
                 logger.info("没有运行中的训练任务，最终状态: %s", final_status or "未知")
+                if final_status == "排队中":
+                    logger.info("训练仍在队列中，将继续后台运行")
+                    return
                 if final_status != "已完成":
                     raise AutoTrainError(f"训练未成功完成，最终状态: {final_status or '未知'}")
                 return
 
             # session 连续多次查不到，且当前也没有运行中的任务 -> 大概率 ID 错了或已被清理
             if missing_session_count >= MAX_MISSING_SESSION and not current_training_id:
+                final_status = self._fetch_session_status(self.training_id)
+                if final_status == "排队中":
+                    logger.info("训练仍在队列中，将继续后台运行")
+                    return
                 raise AutoTrainError(
                     f"连续 {MAX_MISSING_SESSION} 次未查询到 training_id={self.training_id}，"
                     "可能拿到的不是本次训练 ID 或训练已被后端清理"
                 )
 
             if time.time() - start > timeout:
+                final_status = self._fetch_session_status(self.training_id)
+                if final_status == "排队中":
+                    logger.info("监控超时但训练仍在队列中，将继续后台运行")
+                    return
                 raise AutoTrainError(f"监控超时 ({timeout}s)")
             time.sleep(interval)
 
@@ -939,12 +1005,48 @@ class DLCVAutoTrainer:
         done.wait()
         logger.info("收到关闭浏览器信号，继续收尾...")
 
+    def _build_webbridge_config(self) -> dict:
+        """构造传给 WebBridge 适配器的配置（含 platform，供壳端录屏定位窗口）。"""
+        wb_cfg = dict(self.config.get("webbridge", {}) or {})
+        platform_cfg = self.config.get("platform") or {}
+        if platform_cfg:
+            wb_cfg["platform"] = dict(platform_cfg)
+        return wb_cfg
+
+    def _start_shell_recording_early(self) -> None:
+        """
+        在 ensure_project / CDP connect 之前启动壳端窗口录屏，
+        确保从项目信息页出现起就有画面，而不是等到 connect 之后。
+        """
+        wb_cfg = self._build_webbridge_config()
+        if not wb_cfg.get("enabled", True):
+            return
+        if not wb_cfg.get("record_video_dir"):
+            return
+        adapter = str(wb_cfg.get("adapter", "playwright")).lower()
+        if adapter != "webview2_cdp":
+            return
+        if getattr(self, "_bridge", None) is not None:
+            return
+        try:
+            bridge = create_webbridge(wb_cfg)
+            if hasattr(bridge, "start_recording"):
+                ok = bridge.start_recording(timeout=25.0)
+                if ok:
+                    logger.info("已提前启动壳端录屏（覆盖项目信息页之前）: %s", getattr(bridge, "video_path", None))
+                else:
+                    logger.warning("提前启动壳端录屏未成功，将在 connect 时重试")
+            self._bridge = bridge
+        except Exception as e:
+            logger.warning("提前启动壳端录屏失败，将在 connect 时重试: %s", e)
+            self._bridge = None
+
     def run_webbridge_automation(self) -> None:
         """通过 Kimi WebBridge 完成 UI 自动化。"""
         if not self.project_id:
             raise AutoTrainError("project_id 为空，无法执行 WebBridge 自动化")
 
-        wb_cfg = self.config.get("webbridge", {})
+        wb_cfg = self._build_webbridge_config()
         if not wb_cfg.get("enabled", True):
             logger.info("webbridge.enabled=false，跳过 WebBridge 自动化")
             return
@@ -957,19 +1059,68 @@ class DLCVAutoTrainer:
         monitor = self.config["training"].get("monitor_until_complete", True)
 
         bridge = None
-        # 配置文件优先级高于命令行：若配置中已设置 keep_browser_open 则使用配置值
-        keep_open = wb_cfg.get("keep_browser_open", self.keep_browser_open)
 
         try:
-            bridge = create_webbridge(wb_cfg)
+            # 复用提前启动录屏时创建的 bridge（已在录制）；否则新建
+            bridge = getattr(self, "_bridge", None)
+            if bridge is None:
+                bridge = create_webbridge(wb_cfg)
+                # 在 CDP attach 前再尝试一次录屏，保证从项目信息页开始就有画面
+                if hasattr(bridge, "start_recording"):
+                    try:
+                        bridge.start_recording(timeout=20.0)
+                    except Exception as e:
+                        logger.warning("connect 前启动录屏失败: %s", e)
+
             bridge.connect()
             self._bridge = bridge
             logger.info("连接 Kimi WebBridge (adapter=%s)", wb_cfg.get("adapter", "playwright"))
 
+            # webview2_cdp 模式下，壳端自带前端服务器（如 localhost:13222），
+            # 不要再往 localhost:8842 跳，否则会把壳端前端顶掉、后端随之断开。
+            already_on_project_page = False
+            if wb_cfg.get("adapter", "playwright").lower() == "webview2_cdp":
+                page = getattr(bridge, "_page", None)
+                if page:
+                    actual_url = page.url or ""
+                    parsed = urlparse(actual_url)
+                    actual_base = f"{parsed.scheme}://{parsed.netloc}/#/"
+                    if actual_base != self.frontend_url:
+                        logger.info("检测到壳端实际前端 URL: %s，替换配置的 frontend_url", actual_base)
+                        self.frontend_url = actual_base
+                        project_url = f"{self.frontend_url}proj_panel/{self.project_id}"
+                        param_url = f"{self.frontend_url}proj_panel/{self.project_id}/parameter_edit"
+                    # 仅当已在「项目信息/编辑」页时才跳过导航。
+                    # train_detail / parameter_edit 等子页没有侧边栏，必须回到项目页。
+                    path = (parsed.fragment or "").lower()
+                    on_subpage = any(
+                        token in path
+                        for token in (
+                            "train_detail",
+                            "parameter_edit",
+                            "data_analysis",
+                            "data_augmentation",
+                            "augmentation",
+                        )
+                    )
+                    if (
+                        self.project_id
+                        and self.project_id in actual_url
+                        and not on_subpage
+                    ):
+                        logger.info("壳端已处于项目页面: %s，跳过导航", actual_url)
+                        already_on_project_page = True
+                    elif on_subpage and self.project_id in actual_url:
+                        logger.info(
+                            "壳端当前在子页面 (%s)，将导航回项目信息页",
+                            actual_url,
+                        )
+
             # 如果 Playwright 适配器支持新流程，从项目信息页按菜单一步步走
             if hasattr(bridge, "run_training_workflow"):
-                logger.info("导航至项目信息页: %s", project_url)
-                bridge.navigate(project_url)
+                if not already_on_project_page:
+                    logger.info("导航至项目信息页: %s", project_url)
+                    bridge.navigate(project_url)
 
                 # 记录点击「开始训练」前的最新 training_id，便于之后识别本次新建的 session
                 previous_id = self.discover_training_id(self.project_id)
@@ -978,8 +1129,9 @@ class DLCVAutoTrainer:
                 result = bridge.run_training_workflow(ui_flow, hp)
             else:
                 # 兜底：旧版直接跳转到参数页
-                logger.info("导航至训练参数页: %s", param_url)
-                bridge.navigate(param_url)
+                if not already_on_project_page:
+                    logger.info("导航至训练参数页: %s", param_url)
+                    bridge.navigate(param_url)
 
                 previous_id = self.discover_training_id(self.project_id)
                 logger.info("点击开始训练前最新 training_id: %s", previous_id or "无")
@@ -1006,14 +1158,6 @@ class DLCVAutoTrainer:
 
             if monitor:
                 self.monitor_training()
-
-            if keep_open:
-                logger.info("训练已完成，浏览器窗口将保持打开，按 Enter 关闭...")
-                print("训练已完成，按 Enter 关闭浏览器窗口...", flush=True)
-                try:
-                    self._wait_for_browser_close_signal()
-                except (EOFError, KeyboardInterrupt):
-                    logger.info("收到中断，准备关闭浏览器")
         except WebBridgeError as e:
             logger.error("Kimi WebBridge 调用失败: %s", e)
             self._save_error_screenshot(bridge, "webbridge_error")
@@ -1105,19 +1249,56 @@ class DLCVAutoTrainer:
 
         wb_cfg = self.config.get("webbridge", {})
         wb_enabled = wb_cfg.get("enabled", True)
+        adapter = wb_cfg.get("adapter", "playwright").lower()
+        is_webview2 = adapter == "webview2_cdp"
+
+        # 壳端模式：准备干净的 WebView2 用户数据目录，避免缓存/状态导致白屏
+        webview2_user_data = None
+        if is_webview2:
+            work_dir = Path(self.config.get("project", {}).get("work_dir", "./")).resolve()
+            webview2_user_data = work_dir / "webview2_user_data"
+            webview2_user_data.mkdir(parents=True, exist_ok=True)
 
         logger.info("========== AUTO TRAIN 2.0 (WebBridge) START ==========")
+        logger.info("WebBridge adapter: %s", adapter)
 
         # 进程管理
         backend_already_ready = self.is_backend_ready()
-        if self.reuse and backend_already_ready:
-            logger.info("--reuse: 检测到后端已运行，将复用现有实例")
+        cdp_already_ready = False
+        if is_webview2:
+            cdp_port = int(wb_cfg.get("cdp_port", 9222))
+            cdp_already_ready = self.is_cdp_ready(cdp_port, timeout=2.0)
+
+        if self.reuse and backend_already_ready and (not is_webview2 or cdp_already_ready):
+            if is_webview2:
+                logger.info("--reuse: 检测到后端与 CDP 端口均已运行，将复用现有实例")
+            else:
+                logger.info("--reuse: 检测到后端已运行，将复用现有实例")
             self.platform_proc = None
         else:
             if self.reuse:
-                logger.info("--reuse: 后端未运行，执行干净启动")
+                if backend_already_ready and is_webview2 and not cdp_already_ready:
+                    logger.info("--reuse: 后端已运行但 CDP 端口未就绪，执行干净重启")
+                else:
+                    logger.info("--reuse: 后端未运行，执行干净启动")
             self.kill_conflicts()
-            self.launch_platform(dva_path)
+            extra_env = None
+            if is_webview2:
+                extra_env = {
+                    "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS": (
+                        f"--remote-debugging-port={cdp_port} "
+                        "--remote-allow-origins=* "
+                        "--disable-gpu "
+                        "--disable-software-rasterizer "
+                        "--disable-features=CalculateNativeWinOcclusion "
+                        "--disable-backgrounding-occluded-windows "
+                        "--disable-renderer-backgrounding "
+                        "--disable-background-timer-throttling"
+                    ),
+                }
+                if webview2_user_data:
+                    extra_env["WEBVIEW2_USER_DATA_FOLDER"] = str(webview2_user_data)
+            self.launch_platform(dva_path, extra_env=extra_env)
             logger.info("已启动客户端 exe")
 
         # 等待服务就绪
@@ -1128,30 +1309,109 @@ class DLCVAutoTrainer:
             self.wait_frontend_ready()
             logger.info("frontend ready")
 
+        # webview2：在 ensure_project 之前启动壳端录屏，覆盖「项目信息页」出现过程
+        if wb_enabled and is_webview2:
+            try:
+                self._start_shell_recording_early()
+            except Exception as e:
+                logger.warning("提前录屏启动异常（忽略，后续 connect 会重试）: %s", e)
+
         # 确保项目与超参
         self.ensure_project(dva_path)
         self.update_hyperparameters()
 
         # WebBridge 自动化 或 API 兜底
         # 把 Playwright 相关操作放到独立线程，避免和主线程/UI 线程竞争导致录屏失败
+        training_launched = False
         if wb_enabled:
             try:
                 self._run_webbridge_in_thread()
+                training_launched = bool(self.training_id)
             except Exception as e:
                 logger.error("WebBridge 自动化失败: %s", e)
                 logger.info("尝试使用后端 API 兜底启动训练")
-                self.start_training_api()
-                if self.config["training"].get("monitor_until_complete", True):
-                    self.monitor_training()
+                try:
+                    self.start_training_api()
+                    training_launched = True
+                    if self.config["training"].get("monitor_until_complete", True):
+                        try:
+                            self.monitor_training()
+                        except AutoTrainError as me:
+                            # 训练已启动，监控过程中因排队/超时而失败时，不标记任务失败
+                            logger.warning("训练监控未等到最终状态: %s", me)
+                except Exception as api_e:
+                    logger.error("后端 API 兜底也失败: %s", api_e)
+                    raise
         else:
             self.start_training_api()
+            training_launched = True
             if self.config["training"].get("monitor_until_complete", True):
-                self.monitor_training()
+                try:
+                    self.monitor_training()
+                except AutoTrainError as me:
+                    logger.warning("训练监控未等到最终状态: %s", me)
+
+        if training_launched:
+            # 注意：training_launched 只表示「训练被拉起」，不代表「训练成功完成」。
+            # 若最终状态是训练失败，不能再标成成功，否则上层多任务流水线会误判。
+            final_ok = True
+            try:
+                if self.training_id:
+                    st = self._fetch_session_status(self.training_id)
+                    if st and st != "已完成" and st in getattr(self, "TERMINAL_STATUSES", set()):
+                        final_ok = False
+                        logger.error(
+                            "训练最终状态非成功: training_id=%s status=%s",
+                            self.training_id,
+                            st,
+                        )
+            except Exception:
+                pass
+
+            if final_ok:
+                logger.info("训练已成功启动（training_id=%s），任务视为成功", self.training_id or "未知")
+            else:
+                logger.error(
+                    "训练已结束但未成功（training_id=%s），任务视为失败",
+                    self.training_id or "未知",
+                )
+                # 失败时不要再等人关窗口；直接收尾，方便多任务继续
+                keep_open = False
+                # 通过异常让 main() 返回非 0，上层 4.0 才能正确记 failed_tasks
+                # 但若调用方已 catch 并继续，至少日志明确
+                raise AutoTrainError(
+                    f"训练未成功完成，training_id={self.training_id}"
+                )
+
+        # 训练结束后若配置为保持窗口打开，统一等待关闭信号（覆盖 WebBridge 成功和 API 兜底两条路径）
+        # 注意：失败路径已在上面 raise，不会走到这里的 keep_open
+        keep_open = wb_cfg.get("keep_browser_open", self.keep_browser_open)
+        if keep_open:
+            logger.info("训练已完成，应用窗口将保持打开，点击「关闭应用」或按 Enter 关闭...")
+            print("训练已完成，点击「关闭应用」或按 Enter 关闭窗口...", flush=True)
+            try:
+                self._wait_for_browser_close_signal()
+            except (EOFError, KeyboardInterrupt):
+                logger.info("收到中断，准备关闭应用")
 
         logger.info("========== AUTO TRAIN 2.0 (WebBridge) DONE ==========")
 
     def shutdown(self) -> None:
-        """关闭已启动的平台进程。"""
+        """关闭已启动的平台进程，并确保提前启动的录屏被收尾。"""
+        # WebBridge 失败走 API 兜底时，录屏 bridge 可能仍挂在 self._bridge 上，这里统一收尾
+        bridge = getattr(self, "_bridge", None)
+        if bridge is not None:
+            try:
+                if hasattr(bridge, "close"):
+                    bridge.close()
+            except Exception as e:
+                logger.warning("shutdown 关闭 bridge 失败: %s", e)
+            try:
+                self._rename_playwright_video(bridge)
+            except Exception as e:
+                logger.warning("shutdown 保存录屏失败: %s", e)
+            self._bridge = None
+
         if self.reuse:
             logger.info("--reuse: 不关闭复用的平台进程")
             return

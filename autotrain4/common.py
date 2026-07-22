@@ -8,7 +8,7 @@ AutoTrain 4.0 共享常量与工具函数。
 import os
 import re
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Dict, List, Optional, Union
 
 # ---------------------------------------------------------------------------
 # 任务类型映射

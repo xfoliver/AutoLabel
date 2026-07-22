@@ -60,17 +60,19 @@ class RequirementJudge:
             "{\n"
             '  "proceed": true,\n'
             '  "reasoning": "对需求的理解、数据集匹配度、潜在风险的简要说明",\n'
-            '  "adjustments": {"key": "value"}\n'
+            '  "adjustments": {"project_name": "可选名称", "description": "可选描述", '
+            '"hyperparameters": {"max_epochs": 12}}\n'
             "}\n"
             "注意：\n"
             "1. proceed 为 true 表示可以继续训练；为 false 时必须说明原因。\n"
-            "2. adjustments 中可以给出对 project_name、description、hyperparameters 等的修正建议，没有则留空对象。\n"
+            "2. adjustments 只允许 project_name、description、hyperparameters；不要返回数据增强，"
+            "数据增强必须严格遵守当前任务的解析意图。没有修正建议则返回空对象。\n"
             "3. 只返回 JSON，不要附加说明。"
         )
         context = task_context if task_context is not None else intent.raw_prompt
         user_msg = (
             f"用户原始输入：{context}\n"
-            f"解析意图：{json.dumps(intent.to_dict(), ensure_ascii=False)}\n"
+            f"解析意图：{json.dumps(intent.to_task_dict(), ensure_ascii=False)}\n"
             f"数据集匹配：{json.dumps(match.to_dict(), ensure_ascii=False)}"
         )
 

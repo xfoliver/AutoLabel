@@ -65,6 +65,7 @@ class DatasetResolver:
         self,
         intent: TrainIntent,
         auto_threshold: float = 0.55,
+        task_context: Optional[str] = None,
     ) -> DatasetMatch:
         """
         解析最匹配的数据集。
@@ -83,8 +84,8 @@ class DatasetResolver:
         logger.info("第二层 LLM：在 %d 个候选数据集中选择最匹配项", len(candidate_infos))
 
         selection = self.llm.select_dataset(
-            prompt=intent.raw_prompt,
-            intent=intent.to_dict(),
+            prompt=task_context if task_context is not None else intent.raw_prompt,
+            intent=intent.to_task_dict(),
             candidates=candidate_infos,
         )
         logger.debug("LLM 原始选择结果: %s", selection)

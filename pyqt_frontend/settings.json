@@ -1,0 +1,10 @@
+{
+  "backend_url": "http://127.0.0.1:9887",
+  "frontend_url": "http://localhost:8842",
+  "platform_exe": "C:\\dlcv\\Lib\\site-packages\\dlcv_train\\DLCV AI Training Platform-win_x64.exe",
+  "cdp_port": "9222",
+  "llm_base_url": "https://api.deepseek.com",
+  "llm_api_key": "sk-4fd127b871bb49df82ed5e9f4d40346a",
+  "llm_model": "deepseek-chat",
+  "adapter": "webview2_cdp"
+}

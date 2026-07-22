@@ -16,19 +16,25 @@ Kimi WebBridge 适配层
 
 from .base import BaseWebBridge, WebBridgeError, WebBridgeResult
 from .playwright_adapter import PlaywrightWebBridgeAdapter
+from .webview2_cdp_adapter import WebView2CDPWebBridgeAdapter
 
 __all__ = [
     "BaseWebBridge",
     "WebBridgeError",
     "WebBridgeResult",
     "PlaywrightWebBridgeAdapter",
+    "WebView2CDPWebBridgeAdapter",
     "create_webbridge",
 ]
 
 
 def create_webbridge(config: dict):
-    """根据配置创建 Playwright WebBridge 适配器实例。"""
+    """根据配置创建 WebBridge 适配器实例。"""
     adapter_type = config.get("adapter", "playwright").lower()
     if adapter_type == "playwright":
         return PlaywrightWebBridgeAdapter(config)
-    raise WebBridgeError(f"不支持的 WebBridge adapter 类型: {adapter_type}（当前仅支持 playwright）")
+    if adapter_type == "webview2_cdp":
+        return WebView2CDPWebBridgeAdapter(config)
+    raise WebBridgeError(
+        f"不支持的 WebBridge adapter 类型: {adapter_type}（当前支持 playwright / webview2_cdp）"
+    )
