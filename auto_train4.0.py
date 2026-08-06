@@ -117,31 +117,47 @@ class AutoTrain4Orchestrator:
         for idx, intent in enumerate(self.intents, 1):
             logger.info("任务 %d/%d: %s", idx, len(self.intents), intent.to_dict())
 
-        # 2. 单任务特殊模式：测试 / 通用对话
+        # 2. 单任务特殊模式：测试 / 定位数据集 / 通用对话
         if len(self.intents) == 1:
             self.intent = self.intents[0]
             if self.args.test_latest or self.intent.mode == "test":
                 return self._run_test_latest()
-            if not self.intent.needs_training:
+            if self.intent.mode == "locate":
+                return self._run_locate_dataset(self.intent)
+            if self.intent.mode == "chat" or not self.intent.needs_training:
                 return self._run_general_chat()
 
-        # 3. 顺序执行每个训练任务；单个任务失败不影响后续任务
+        # 3. 顺序执行每个意图；locate 只扫盘回报，train 走完整训练链
         total = len(self.intents)
         failed_tasks: List[str] = []
         for idx, intent in enumerate(self.intents, 1):
             self.intent = intent
-            print(f"[TASK {idx}/{total}] {intent.task_type}", flush=True)
-            logger.info("========== 开始执行任务 %d/%d: %s ==========", idx, total, intent.task_type)
+            label = intent.task_type or intent.mode or f"task-{idx}"
+            print(f"[TASK {idx}/{total}] {label} ({intent.mode})", flush=True)
+            logger.info(
+                "========== 开始执行任务 %d/%d: %s mode=%s ==========",
+                idx,
+                total,
+                intent.task_type,
+                intent.mode,
+            )
             try:
-                ret = self._run_single_training(intent, task_index=idx, task_total=total)
+                if intent.mode == "locate":
+                    ret = self._run_locate_dataset(intent, task_index=idx, task_total=total)
+                elif intent.mode == "test":
+                    ret = self._run_test_latest()
+                elif intent.mode == "chat" or not intent.needs_training:
+                    ret = self._run_general_chat()
+                else:
+                    ret = self._run_single_training(intent, task_index=idx, task_total=total)
                 if ret != 0:
                     logger.error("任务 %d/%d 执行失败，继续执行后续任务", idx, total)
-                    failed_tasks.append(intent.task_type)
+                    failed_tasks.append(label)
                 else:
                     logger.info("任务 %d/%d 执行成功，继续执行后续任务", idx, total)
             except Exception as e:
                 logger.exception("任务 %d/%d 发生异常，继续执行后续任务: %s", idx, total, e)
-                failed_tasks.append(intent.task_type)
+                failed_tasks.append(label)
                 if self.run_ctx is not None:
                     self.run_ctx.save_exception(exc=e)
 
@@ -232,20 +248,34 @@ class AutoTrain4Orchestrator:
 
     @staticmethod
     def _build_task_context(intent: TrainIntent) -> str:
-        """为单个任务生成简洁描述，用于 DeepSeek 判断时避免受整句中其他任务干扰。"""
-        parts = [f"训练一个 {intent.task_type} 模型"]
+        """为单个任务生成简洁描述，避免多任务串扰；按 mode 措辞，禁止一律写成「训练」。"""
+        mode = (intent.mode or "train").strip().lower()
+        task = intent.task_type or "未知任务"
+
+        if mode == "locate":
+            parts = [f"仅定位 {task} 数据集（不要训练、不要创建项目）"]
+        elif mode == "test":
+            parts = [f"测试/评估 {task} 模型"]
+        elif mode == "chat":
+            parts = ["通用对话，无训练动作"]
+        elif mode == "dry_run":
+            parts = [f"仅生成 {task} 训练配置（dry_run，不启动训练）"]
+        else:
+            parts = [f"训练一个 {task} 模型"]
+
         if intent.categories:
             parts.append(f"类别：{', '.join(intent.categories)}")
         if getattr(intent, "dataset_path", ""):
             parts.append(f"训练集路径：{intent.dataset_path}")
         elif intent.dataset_hint:
             parts.append(f"数据集提示：{intent.dataset_hint}")
-        if getattr(intent, "output_dir", ""):
+        if getattr(intent, "output_dir", "") and mode not in {"locate", "chat"}:
             parts.append(f"模型输出目录：{intent.output_dir}")
-        if intent.data_augmentation:
-            parts.append(f"启用数据增强：{', '.join(intent.data_augmentation)}")
-        else:
-            parts.append("不启用数据增强")
+        if mode in {"train", "dry_run"}:
+            if intent.data_augmentation:
+                parts.append(f"启用数据增强：{', '.join(intent.data_augmentation)}")
+            else:
+                parts.append("不启用数据增强")
         return "，".join(parts)
 
     def _resolve_output_dir(self, intent: TrainIntent) -> Optional[Path]:
@@ -298,7 +328,14 @@ class AutoTrain4Orchestrator:
         2. 意图中的 ``dataset_path`` / 路径型 ``dataset_hint``（来自 LLM 或提示词正则）
         3. 回退到 scan_dirs 多根语义扫描
         """
-        resolver = DatasetResolver(scan_dirs=self.scan_dirs, llm_client=self.llm)
+        enable_nl = not bool(getattr(self.args, "no_nl_locate", False))
+        scan_depth = int(getattr(self.args, "scan_depth", 4) or 4)
+        resolver = DatasetResolver(
+            scan_dirs=self.scan_dirs,
+            llm_client=self.llm,
+            enable_nl_locate=enable_nl,
+            scan_depth=scan_depth,
+        )
         if folder_name:
             try:
                 return resolver.resolve_folder_arg(folder_name, intent)
@@ -511,14 +548,65 @@ class AutoTrain4Orchestrator:
         except Exception as e:
             logger.warning("清空聊天记录失败: %s", e)
 
+    def _run_locate_dataset(
+        self,
+        intent: TrainIntent,
+        task_index: int = 1,
+        task_total: int = 1,
+    ) -> int:
+        """仅定位数据集：匹配路径后回报用户，不生成训练配置、不调用 auto_train2。"""
+        logger.info(
+            "========== AUTO TRAIN 4.0 定位数据集 (%d/%d) ==========",
+            task_index,
+            task_total,
+        )
+        self.intent = intent
+        use_folder = self.args.folder if task_index == 1 else None
+        try:
+            match = self._resolve_match(intent, folder_name=use_folder)
+        except Exception as exc:
+            logger.error("定位数据集失败: %s", exc)
+            msg = (
+                f"未能定位到数据集。\n"
+                f"任务类型：{intent.task_type or '（未指定）'}\n"
+                f"线索：{intent.dataset_hint or intent.dataset_path or '（无）'}\n"
+                f"原因：{exc}"
+            )
+            print(encode_chat_response(msg), flush=True)
+            return 1
+
+        self.match = match
+        logger.info("定位结果: %s", match.to_dict())
+
+        lines = [
+            "已定位到数据集（仅查找，未启动训练）。",
+            f"- 任务类型：{intent.task_type or match.task_type or '（未指定）'}",
+            f"- 项目目录：{match.folder}",
+            f"- 训练集目录：{match.dataset_dir}",
+            f"- 图片数量：{match.total_images}",
+        ]
+        if match.categories:
+            lines.append(f"- 检测到的类别：{', '.join(match.categories)}")
+        if match.reasoning:
+            lines.append(f"- 匹配说明：{match.reasoning}")
+        if intent.dataset_hint:
+            lines.append(f"- 用户线索：{intent.dataset_hint}")
+        lines.append("如需训练，请明确说「训练」并指定任务类型。")
+        answer = "\n".join(lines)
+        print(f"[DATASET_DIR] {match.dataset_dir}", flush=True)
+        print(f"[PROJECT_DIR] {match.folder}", flush=True)
+        print(encode_chat_response(answer), flush=True)
+        return 0
+
     def _run_general_chat(self) -> int:
-        """通用对话兜底：当用户输入不是训练/测试意图时，用 LLM 做友好回复并记住历史。"""
+        """通用对话兜底：当用户输入不是训练/测试/定位意图时，用 LLM 做友好回复并记住历史。"""
         logger.info("========== AUTO TRAIN 4.0 通用对话 ==========")
-        logger.info("用户输入与训练/测试无关，进入通用对话模式")
+        logger.info("用户输入进入通用对话模式")
 
         system_msg = (
             "你是 AutoTrain 4.0 训练自动化系统的智能助手。"
             "请根据提供的上下文，友好、简洁地回答用户的问题；不要编造不存在的信息。"
+            "若用户其实是在找数据集，可提示他们使用「定位/查找某某训练集」的说法。"
         )
 
         # 查找最近的几个 run_dir，作为真实上下文
@@ -873,6 +961,17 @@ def main() -> int:
     parser.add_argument(
         "--folder",
         help="直接指定数据集目录：可为绝对路径，或任一 --scan-dir 下的文件夹名（跳过语义匹配）",
+    )
+    parser.add_argument(
+        "--scan-depth",
+        type=int,
+        default=4,
+        help="自然语言模糊定位时，相对锚点的最大搜索深度（默认 4）",
+    )
+    parser.add_argument(
+        "--no-nl-locate",
+        action="store_true",
+        help="禁用自然语言锚点深搜，仅使用显式路径 / --folder / 多根浅扫",
     )
     parser.add_argument(
         "--output-dir",

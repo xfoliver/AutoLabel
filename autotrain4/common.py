@@ -5,10 +5,14 @@ AutoTrain 4.0 共享常量与工具函数。
 以及配置/模型路径查找等通用工具。
 """
 
+import logging
 import os
 import re
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Union
+from typing import Dict, Iterable, List, Optional, Sequence, Set, Union
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # 任务类型映射
@@ -106,6 +110,130 @@ DEFAULT_WEBBRIDGE = {
 
 # 图片扩展名，用于数据集类别自动检测
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp", ".gif"}
+
+# NL 定位：深搜时跳过的目录名（小写比较）
+NL_SKIP_DIR_NAMES = {
+    "work",
+    "checkpoints",
+    "__pycache__",
+    ".git",
+    "node_modules",
+    "baseline models",
+    "$recycle.bin",
+    "system volume information",
+    "models",
+    "model",
+    "输出",
+    "模型输出",
+}
+
+# NL 线索提取时忽略的停用词（小写 / 原文）
+_NL_STOPWORDS = {
+    "训练",
+    "训练集",
+    "训练数据",
+    "数据集",
+    "数据",
+    "目录",
+    "文件夹",
+    "路径",
+    "模型",
+    "文件",
+    "默认",
+    "参数",
+    "帮我",
+    "请",
+    "一个",
+    "一下",
+    "使用",
+    "用",
+    "做",
+    "跑",
+    "启动",
+    "开始",
+    "里面",
+    "里边",
+    "中的",
+    "中",
+    "里的",
+    "里",
+    "下的",
+    "下",
+    "上的",
+    "上",
+    "那个",
+    "这个",
+    "我的",
+    "以及",
+    "和",
+    "与",
+    "及",
+    "的",
+    "了",
+    "吧",
+    "呢",
+    "啊",
+    "是",
+    "在",
+    "到",
+    "把",
+    "将",
+    "从",
+    "为",
+    "并",
+    "且",
+    "或",
+    "等",
+    "项目",
+    "工程",
+    "平台",
+    "测试",
+    "正式",
+    "nas",
+    "disk",
+    "drive",
+    "folder",
+    "directory",
+    "path",
+    # 注意：data / zzh 等短目录名不要放进停用词，否则无法作 path_fragment
+    "dataset",
+    "train",
+    "training",
+    "model",
+    "default",
+    "params",
+    "parameter",
+    "please",
+    "help",
+    "me",
+    "a",
+    "an",
+    "the",
+    "my",
+    "this",
+    "that",
+    "with",
+    "from",
+    "under",
+    "in",
+    "on",
+    "of",
+    "to",
+    "for",
+    "and",
+    "or",
+}
+# 任务别名也视为停用词，避免 iseg/cls 被当成路径片段
+_NL_STOPWORDS.update(a.lower() for a in TASK_ALIASES.keys())
+_NL_STOPWORDS.update(t.lower() for t in TASK_ALIASES.values())
+
+# 有界深搜默认限制
+NL_DEFAULT_MAX_DEPTH = 4
+NL_DEFAULT_MAX_DIRS_VISITED = 800
+NL_DEFAULT_MAX_CANDIDATES = 40
+NL_DEFAULT_TOP_K = 12
+NL_SINGLE_CANDIDATE_SCORE = 3.0
+NL_SCORE_GAP_FALLBACK = 1.5
 
 
 # ---------------------------------------------------------------------------
@@ -430,6 +558,515 @@ def resolve_output_dir(raw: Union[str, Path, None]) -> Optional[Path]:
         return (project_root() / expanded).resolve()
     except OSError:
         return project_root() / expanded
+
+
+# ---------------------------------------------------------------------------
+# 自然语言位置线索（模糊定位训练集，非完整绝对路径）
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class LocationClues:
+    """从提示词提取的位置线索，用于有界锚点深搜。"""
+
+    drives: List[str] = field(default_factory=list)  # 如 ["Z:\\", "D:\\"]
+    path_fragments: List[str] = field(default_factory=list)  # 如 ["zzh", "data"]
+    name_keywords: List[str] = field(default_factory=list)  # 如 ["易格", "易格技术"]
+    task_type: str = ""
+
+    def has_searchable_signal(self) -> bool:
+        """是否具备可触发 NL 深搜的信号（禁止仅凭盘符整盘扫）。"""
+        return bool(self.path_fragments or self.name_keywords)
+
+    def to_dict(self) -> Dict[str, object]:
+        return {
+            "drives": list(self.drives),
+            "path_fragments": list(self.path_fragments),
+            "name_keywords": list(self.name_keywords),
+            "task_type": self.task_type,
+        }
+
+
+def normalize_name_for_match(name: str) -> str:
+    """文件夹名模糊匹配用的归一化：小写、去常见连接符与空白。"""
+    text = str(name or "").strip().lower()
+    if not text:
+        return ""
+    text = re.sub(r"[\s_\-—–·.]+", "", text)
+    return text
+
+
+def fuzzy_name_match(name: str, keyword: str) -> bool:
+    """判断目录名是否模糊包含关键词（子串 / 归一化子串）。"""
+    raw_name = str(name or "").strip()
+    raw_kw = str(keyword or "").strip()
+    if not raw_name or not raw_kw:
+        return False
+    if raw_kw.lower() in raw_name.lower():
+        return True
+    n = normalize_name_for_match(raw_name)
+    k = normalize_name_for_match(raw_kw)
+    if not n or not k:
+        return False
+    if k in n or n in k:
+        return True
+    # 短英文 token：要求更严，避免 z 命中 zzh 以外的误伤已由长度控制
+    if len(k) >= 2 and k in n:
+        return True
+    return False
+
+
+def _dedupe_preserve(items: Iterable[str]) -> List[str]:
+    seen: Set[str] = set()
+    out: List[str] = []
+    for item in items:
+        text = str(item or "").strip()
+        if not text:
+            continue
+        key = text.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(text)
+    return out
+
+
+def _is_stopword_token(token: str) -> bool:
+    t = str(token or "").strip()
+    if not t:
+        return True
+    if t.lower() in _NL_STOPWORDS:
+        return True
+    # 纯标点
+    if re.fullmatch(r"[\W_]+", t, flags=re.UNICODE):
+        return True
+    return False
+
+
+def _chinese_stopwords_sorted() -> List[str]:
+    return sorted(
+        (s for s in _NL_STOPWORDS if re.fullmatch(r"[一-鿿]+", s)),
+        key=len,
+        reverse=True,
+    )
+
+
+def _strip_stopword_affixes(token: str) -> str:
+    """反复剥掉中文 token 首尾停用词/助词，得到更干净的项目名。"""
+    t = str(token or "").strip()
+    if not t:
+        return ""
+    # 混有拉丁时先丢掉盘符口语残留
+    t = re.sub(r"(?i)[a-z]\s*盘", "", t).strip()
+    stops = _chinese_stopwords_sorted()
+    particles = ("的", "了", "呢", "吧", "啊", "吗", "么")
+    changed = True
+    while t and changed:
+        changed = False
+        for s in stops:
+            if t.startswith(s) and len(t) > len(s):
+                t = t[len(s) :].strip()
+                changed = True
+                break
+            if t.endswith(s) and len(t) > len(s):
+                t = t[: -len(s)].strip()
+                changed = True
+                break
+        if not changed:
+            for p in particles:
+                if t.startswith(p) and len(t) > len(p):
+                    t = t[len(p) :].strip()
+                    changed = True
+                    break
+                if t.endswith(p) and len(t) > len(p):
+                    t = t[: -len(p)].strip()
+                    changed = True
+                    break
+    return t
+
+
+def _is_noisy_keyword(token: str) -> bool:
+    """过滤由停用词拼接而成的中文噪声，如「帮我训练」「数据在」「文件夹中的易格技术」整段。"""
+    t = str(token or "").strip()
+    if not t:
+        return True
+    if _is_stopword_token(t):
+        return True
+    # 盘符口语残留或「z盘zzh」这类不应进 name_keywords
+    if re.search(r"(?i)[a-z]\s*盘", t):
+        return True
+    # 过短英文已在别处处理；中文至少 2 字且不能整段由停用词覆盖
+    if re.fullmatch(r"[一-鿿]+", t):
+        rest = t
+        for s in _chinese_stopwords_sorted():
+            if s in rest:
+                rest = rest.replace(s, "")
+        rest = rest.strip()
+        if not rest:
+            return True
+        # 剥前后缀后若与原文相同且以功能结构开头，仍可能是噪声短语
+        cleaned = _strip_stopword_affixes(t)
+        if not cleaned or _is_stopword_token(cleaned):
+            return True
+        # 以强功能词/路径虚词开头的整段（未剥离干净前）视为噪声，
+        # 真正的项目名会通过剥离或「中的XX」规则另路进入
+        for prefix in (
+            "帮我",
+            "请帮",
+            "数据在",
+            "训练集是",
+            "模型是",
+            "文件夹",
+            "目录",
+            "里面",
+            "里边",
+        ):
+            if t.startswith(prefix) and t != cleaned:
+                # 若 cleaned 已是有效短名，由调用方用 cleaned；整段 t 丢弃
+                return True
+            if t.startswith(prefix) and len(t) <= len(prefix) + 1:
+                return True
+    return False
+
+
+def _finalize_name_keywords(keywords: Sequence[str]) -> List[str]:
+    """清洗、剥停用词前后缀，并去掉被更短关键词主导的噪声超集。"""
+    cleaned: List[str] = []
+    for raw in keywords:
+        tok = str(raw or "").strip()
+        if not tok:
+            continue
+        peeled = _strip_stopword_affixes(tok) or tok
+        # 剥完后若变成拉丁片段，不进 name_keywords
+        if re.fullmatch(r"[A-Za-z0-9_\-]+", peeled):
+            continue
+        if _is_noisy_keyword(peeled) or _is_stopword_token(peeled):
+            continue
+        if len(peeled) < 2:
+            continue
+        cleaned.append(peeled)
+
+    cleaned = _dedupe_preserve(cleaned)
+    # 若短词是长词的实质核心（长词去掉停用词后等于短词），丢掉长词
+    stops = _chinese_stopwords_sorted()
+    kept: List[str] = []
+    for kw in sorted(cleaned, key=len):  # 短的优先保留
+        dominated = False
+        for short in kept:
+            if short == kw:
+                dominated = True
+                break
+            if short in kw:
+                rest = kw
+                for s in stops:
+                    rest = rest.replace(s, "")
+                rest = re.sub(r"[的了呢吧啊吗么]", "", rest)
+                if normalize_name_for_match(rest) == normalize_name_for_match(short):
+                    dominated = True
+                    break
+                # 长词以短词结尾/开头且多余部分全是虚词
+                if kw.endswith(short) or kw.startswith(short):
+                    extra = kw.replace(short, "", 1)
+                    if not extra or _is_noisy_keyword(extra) or _is_stopword_token(extra):
+                        dominated = True
+                        break
+                    extra2 = _strip_stopword_affixes(extra)
+                    if not extra2:
+                        dominated = True
+                        break
+        if not dominated:
+            kept.append(kw)
+    return _dedupe_preserve(kept)
+
+
+def extract_drive_letters(text: str) -> List[str]:
+    """从自然语言提取盘符根路径，如 z盘 / Z: → ``Z:\\``。"""
+    if not text:
+        return []
+    found: List[str] = []
+    seen: Set[str] = set()
+
+    def _add(letter: str) -> None:
+        L = letter.upper()
+        if not re.fullmatch(r"[A-Z]", L):
+            return
+        root = f"{L}:\\"
+        if root.lower() in seen:
+            return
+        seen.add(root.lower())
+        found.append(root)
+
+    # 中文：z盘 / Z 盘
+    for m in re.finditer(r"(?i)(?<![a-z0-9])([a-z])\s*盘", text):
+        _add(m.group(1))
+    # 英文盘符：Z: 或 Z:\ 或 Z:/
+    for m in re.finditer(r"(?i)(?<![a-z0-9])([a-z]):(?=[\\/\s]|$|[^a-z0-9])", text):
+        _add(m.group(1))
+
+    return found
+
+
+def _strip_known_absolute_paths(text: str) -> str:
+    """去掉已识别的绝对路径，避免再被拆成 fragments。"""
+    cleaned = text
+    for path in extract_filesystem_paths(text):
+        cleaned = cleaned.replace(path, " ")
+    # 再清一遍无引号盘符路径粗匹配
+    cleaned = re.sub(r"[A-Za-z]:\\[^\s\"']+", " ", cleaned)
+    cleaned = re.sub(r"[A-Za-z]:/[^\s\"']+", " ", cleaned)
+    return cleaned
+
+
+def _iter_hint_tokens(hint: str) -> List[str]:
+    if not hint:
+        return []
+    parts = re.split(r"[\s,，、/;|\\]+", str(hint).strip())
+    return [p for p in parts if p and not _is_stopword_token(p)]
+
+
+def extract_location_clues(
+    prompt: str,
+    dataset_hint: str = "",
+    task_type: str = "",
+    extra_keywords: Optional[Sequence[str]] = None,
+) -> LocationClues:
+    """从提示词 / dataset_hint 提取盘符、路径片段与项目名关键词。
+
+    不处理完整绝对路径（由 ``extract_filesystem_paths`` 负责）。
+    """
+    prompt = str(prompt or "")
+    drives = extract_drive_letters(prompt)
+
+    # 去掉绝对路径与盘符口语后再分词
+    work = _strip_known_absolute_paths(prompt)
+    work = re.sub(r"(?i)([a-z])\s*盘", " ", work)
+
+    fragments: List[str] = []
+    keywords: List[str] = []
+
+    # dataset_hint 整段优先作为 name keyword（如「易格技术」）
+    hint = str(dataset_hint or "").strip()
+    if hint and not looks_like_filesystem_path(hint):
+        peeled_hint = _strip_stopword_affixes(hint) or hint
+        if not _is_stopword_token(peeled_hint) and not _is_noisy_keyword(peeled_hint):
+            keywords.append(peeled_hint)
+        keywords.extend(_iter_hint_tokens(peeled_hint))
+
+    if extra_keywords:
+        for kw in extra_keywords:
+            text = str(kw or "").strip()
+            if not text:
+                continue
+            peeled = _strip_stopword_affixes(text) or text
+            if peeled and not _is_stopword_token(peeled) and not _is_noisy_keyword(peeled):
+                keywords.append(peeled)
+
+    # 拉丁片段：zzh、data01、project_x（长度>=2）
+    for m in re.finditer(r"[A-Za-z][A-Za-z0-9_\-]{1,63}", work):
+        tok = m.group(0)
+        if _is_stopword_token(tok):
+            continue
+        # 盘符单字母已在 drive 中处理
+        if re.fullmatch(r"[A-Za-z]", tok):
+            continue
+        fragments.append(tok)
+
+    # 「xx文件夹/目录」中的名称（优先结构化规则，减少整段噪声）
+    for m in re.finditer(
+        r"([A-Za-z0-9_\-一-鿿]{1,40}?)\s*(?:文件夹|目录)(?:中|里|下|内)?",
+        prompt,
+    ):
+        tok = m.group(1).strip()
+        tok = _strip_stopword_affixes(tok) or tok
+        if _is_stopword_token(tok):
+            continue
+        if re.search(r"[A-Za-z]", tok) and not re.search(r"[一-鿿]", tok):
+            if not _is_stopword_token(tok):
+                fragments.append(tok)
+        else:
+            if not _is_noisy_keyword(tok):
+                keywords.append(tok)
+
+    # 「中的XX / 里的XX / 下的XX」（限制捕获长度，避免吞进整句）
+    for m in re.finditer(
+        r"(?:中的|里的|下的|中|里)\s*([A-Za-z0-9_\-一-鿿]{2,16})",
+        prompt,
+    ):
+        tok = m.group(1).strip()
+        # 截断到第一个停用尾巴
+        tok = re.split(r"(?:默认|参数|模型|训练|文件夹|目录)", tok)[0].strip()
+        tok = _strip_stopword_affixes(tok) or tok
+        if _is_noisy_keyword(tok) or _is_stopword_token(tok):
+            continue
+        if re.fullmatch(r"[A-Za-z0-9_\-]+", tok):
+            fragments.append(tok)
+        else:
+            keywords.append(tok)
+
+    # 中文片段：连续汉字 2+（过滤停用词与“停用词拼接”噪声）
+    task_norms = {normalize_name_for_match(t) for t in TASK_ALIASES.values()}
+    task_norms.update(normalize_name_for_match(a) for a in TASK_ALIASES.keys())
+    for m in re.finditer(r"[一-鿿]{2,20}", work):
+        tok = m.group(0)
+        peeled = _strip_stopword_affixes(tok) or tok
+        if _is_noisy_keyword(peeled) or _is_stopword_token(peeled):
+            continue
+        if normalize_name_for_match(peeled) in task_norms:
+            continue
+        # 任务别名是子串且剥完后几乎只剩任务名
+        if any(
+            normalize_name_for_match(peeled) == normalize_name_for_match(t)
+            for t in TASK_ALIASES.values()
+        ):
+            continue
+        keywords.append(peeled)
+
+    clues = LocationClues(
+        drives=_dedupe_preserve(drives),
+        path_fragments=_dedupe_preserve(fragments),
+        name_keywords=_finalize_name_keywords(keywords),
+        task_type=str(task_type or "").strip(),
+    )
+    return clues
+
+
+def _safe_resolve(path: Path) -> Path:
+    try:
+        return path.resolve()
+    except OSError:
+        return path
+
+
+def _path_exists_dir(path: Path) -> bool:
+    try:
+        return path.exists() and path.is_dir()
+    except OSError:
+        return False
+
+
+def _list_child_dirs(root: Path) -> List[Path]:
+    try:
+        entries = list(root.iterdir())
+    except OSError as exc:
+        logger.warning("无法读取目录 %s: %s", root, exc)
+        return []
+    out: List[Path] = []
+    for entry in entries:
+        try:
+            if entry.name.startswith("."):
+                continue
+            if entry.is_symlink():
+                continue
+            if not entry.is_dir():
+                continue
+            if entry.name.lower() in NL_SKIP_DIR_NAMES:
+                continue
+        except OSError:
+            continue
+        out.append(entry)
+    return out
+
+
+def resolve_search_anchors(
+    clues: LocationClues,
+    scan_dirs: Optional[Sequence[Union[str, Path]]] = None,
+    *,
+    drive_roots: Optional[Sequence[Union[str, Path]]] = None,
+) -> List[Path]:
+    """根据位置线索解析有界深搜的锚点目录（必须已存在）。
+
+    ``drive_roots`` 仅供测试注入：按与 ``clues.drives`` 相同顺序映射盘符根，
+    避免单测依赖真实 ``Z:\\``。
+    """
+    if clues is None or not clues.has_searchable_signal():
+        return []
+
+    roots = normalize_scan_dirs(list(scan_dirs) if scan_dirs is not None else None)
+    anchors: List[Path] = []
+    seen: Set[str] = set()
+
+    def _add_anchor(path: Path) -> None:
+        if not _path_exists_dir(path):
+            return
+        resolved = _safe_resolve(path)
+        key = str(resolved).lower()
+        if key in seen:
+            return
+        seen.add(key)
+        anchors.append(resolved)
+
+    # 盘符根列表
+    drive_paths: List[Path] = []
+    if drive_roots is not None:
+        for item in drive_roots:
+            if item is None:
+                continue
+            drive_paths.append(Path(item))
+    else:
+        for d in clues.drives:
+            drive_paths.append(Path(d))
+
+    fragments = list(clues.path_fragments)
+    keywords = list(clues.name_keywords)
+
+    # 1) drive + 每个 fragment → drive\fragment
+    for drive in drive_paths:
+        for frag in fragments:
+            _add_anchor(Path(drive) / frag)
+
+    # 2) 禁止：仅 drive 根且无 fragment/keyword 时不加入（has_searchable_signal 已保证有其一）
+    #    若有 keyword 但无 fragment：在 drive 下一层按名称模糊匹配
+    if keywords:
+        for drive in drive_paths:
+            if not _path_exists_dir(Path(drive)):
+                continue
+            for child in _list_child_dirs(Path(drive)):
+                if any(fuzzy_name_match(child.name, kw) for kw in keywords):
+                    _add_anchor(child)
+                # fragment 也在 drive 下一层再匹配一次（大小写不同）
+            for frag in fragments:
+                direct = Path(drive) / frag
+                if _path_exists_dir(direct):
+                    _add_anchor(direct)
+                else:
+                    for child in _list_child_dirs(Path(drive)):
+                        if fuzzy_name_match(child.name, frag):
+                            _add_anchor(child)
+
+    # 3) scan_dirs 下一层：fragment / keyword 模糊匹配
+    for root in roots:
+        if not _path_exists_dir(root):
+            continue
+        for child in _list_child_dirs(root):
+            name = child.name
+            if fragments and any(fuzzy_name_match(name, f) for f in fragments):
+                _add_anchor(child)
+                continue
+            if keywords and any(fuzzy_name_match(name, kw) for kw in keywords):
+                _add_anchor(child)
+
+        # scan_dir 自身若名命中也可作为锚点（少见）
+        if keywords and any(fuzzy_name_match(root.name, kw) for kw in keywords):
+            _add_anchor(root)
+        if fragments and any(fuzzy_name_match(root.name, f) for f in fragments):
+            _add_anchor(root)
+
+    # 4) 仅有 keyword、无 drive：已在 scan_dirs 一层处理；若无 anchor 且只有一个 fragment
+    #    尝试 project_root / fragment
+    if not anchors and fragments:
+        for frag in fragments:
+            _add_anchor(project_root() / frag)
+
+    if anchors:
+        logger.info(
+            "NL 定位锚点: %s (clues=%s)",
+            [str(a) for a in anchors],
+            clues.to_dict(),
+        )
+    else:
+        logger.info("NL 定位未解析到有效锚点: clues=%s", clues.to_dict())
+
+    return anchors
 
 
 def find_latest_config(task_type: str = "") -> Optional[Path]:
