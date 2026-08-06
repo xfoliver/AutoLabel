@@ -38,7 +38,11 @@ from autotrain4.common import (
     find_baseline_model,
     find_latest_config,
     find_latest_dvp,
+    normalize_scan_dirs,
+    resolve_output_dir,
     resolve_path,
+    select_dataset_path_from_prompt,
+    select_output_path_from_prompt,
 )
 from autotrain4.config_builder import ConfigBuilder
 from autotrain4.evaluator import InferenceEvaluator
@@ -80,7 +84,12 @@ class AutoTrain4Orchestrator:
     def __init__(self, args: argparse.Namespace):
         self.args = args
         self.project_root = Path(__file__).parent.resolve()
-        self.scan_dir = resolve_path(args.scan_dir or "AI训练平台测试")
+        # 多根浅扫：--scan-dir 可重复，或单参数内用 ; | 分隔
+        self.scan_dirs = normalize_scan_dirs(
+            getattr(args, "scan_dir", None),
+            default="AI训练平台测试",
+        )
+        self.scan_dir = self.scan_dirs[0]  # 兼容旧逻辑（如最近 run 查找的默认根）
         self.chat_history_path = resolve_path(args.chat_history or "./record/chat_history.json")
         if getattr(args, "clear_chat_history", False):
             self._clear_chat_history()
@@ -160,19 +169,33 @@ class AutoTrain4Orchestrator:
         logger.info("任务 %d/%d 匹配数据集: %s", task_index, task_total, self.match.to_dict())
 
         # 5. 创建本次 run 的归档上下文
+        # 模型输出目录优先级：CLI --output-dir > 意图 output_dir > 提示词正则
+        output_dir = self._resolve_output_dir(intent)
         self.run_ctx = RunContext(
             dataset_dir=self.match.dataset_dir,
             project_dir=self.match.folder,
             folder_name=self.match.folder.name,
+            output_dir=output_dir,
         )
         self.run_ctx.save_runtime_info({
             "backend_url": self.args.inference_api_url,
             "frontend_url": self.config.get("webbridge", {}).get("frontend_url") if hasattr(self, "config") else None,
             "task_index": task_index,
             "task_total": task_total,
+            "output_dir": str(output_dir) if output_dir else None,
         })
+        if output_dir:
+            logger.info(
+                "任务 %d/%d 使用自定义模型输出目录: %s -> run_dir=%s",
+                task_index,
+                task_total,
+                output_dir,
+                self.run_ctx.run_dir,
+            )
         logger.info("任务 %d/%d 归档目录: %s", task_index, task_total, self.run_ctx.run_dir)
         print(f"[RUN_DIR] {self.run_ctx.run_dir}", flush=True)
+        if output_dir:
+            print(f"[OUTPUT_DIR] {output_dir}", flush=True)
 
         # 6. 第三层：DeepSeek 需求分析与判断
         judge = RequirementJudge()
@@ -213,29 +236,90 @@ class AutoTrain4Orchestrator:
         parts = [f"训练一个 {intent.task_type} 模型"]
         if intent.categories:
             parts.append(f"类别：{', '.join(intent.categories)}")
+        if getattr(intent, "dataset_path", ""):
+            parts.append(f"训练集路径：{intent.dataset_path}")
+        elif intent.dataset_hint:
+            parts.append(f"数据集提示：{intent.dataset_hint}")
+        if getattr(intent, "output_dir", ""):
+            parts.append(f"模型输出目录：{intent.output_dir}")
         if intent.data_augmentation:
             parts.append(f"启用数据增强：{', '.join(intent.data_augmentation)}")
         else:
             parts.append("不启用数据增强")
         return "，".join(parts)
 
+    def _resolve_output_dir(self, intent: TrainIntent) -> Optional[Path]:
+        """解析模型输出根目录。
+
+        优先级：
+        1. CLI ``--output-dir``
+        2. 意图中的 ``output_dir``（LLM 或提示词解析）
+        3. 再从原始提示词正则提取一次
+        """
+        candidates = [
+            getattr(self.args, "output_dir", None),
+            getattr(intent, "output_dir", None),
+        ]
+        if intent.raw_prompt:
+            candidates.append(select_output_path_from_prompt(intent.raw_prompt))
+
+        for raw in candidates:
+            path = resolve_output_dir(raw)
+            if path is None:
+                continue
+            # 避免把输出目录指到训练集自身，导致和数据集目录缠在一起
+            try:
+                if self.match and path.resolve() == Path(self.match.dataset_dir).resolve():
+                    logger.warning(
+                        "模型输出目录与训练集相同（%s），已忽略，回退默认 project/work",
+                        path,
+                    )
+                    continue
+            except Exception:
+                pass
+            try:
+                path.mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                raise AutoTrain4Error(f"无法创建模型输出目录: {path} ({exc})") from exc
+            if not getattr(intent, "output_dir", ""):
+                intent.output_dir = str(path)
+            return path
+        return None
+
     def _resolve_match(
         self,
         intent: TrainIntent,
         folder_name: Optional[str] = None,
     ):
-        """解析数据集匹配结果。"""
-        resolver = DatasetResolver(self.scan_dir, llm_client=self.llm)
+        """解析数据集匹配结果。
+
+        优先级：
+        1. CLI ``--folder``（支持绝对路径或任一 scan_dir 下相对名）
+        2. 意图中的 ``dataset_path`` / 路径型 ``dataset_hint``（来自 LLM 或提示词正则）
+        3. 回退到 scan_dirs 多根语义扫描
+        """
+        resolver = DatasetResolver(scan_dirs=self.scan_dirs, llm_client=self.llm)
         if folder_name:
-            folder = self.scan_dir / folder_name
-            if not folder.exists():
-                raise AutoTrain4Error(f"指定文件夹不存在: {folder}")
-            return resolver._score_folder(folder, intent)
-        return resolver.resolve(
-            intent,
-            auto_threshold=self.args.auto_threshold,
-            task_context=self._build_task_context(intent),
-        )
+            try:
+                return resolver.resolve_folder_arg(folder_name, intent)
+            except ValueError as exc:
+                raise AutoTrain4Error(str(exc)) from exc
+
+        # 双保险：若 NLU 未填 dataset_path，再从原始提示词抽一次
+        if not getattr(intent, "dataset_path", "") and intent.raw_prompt:
+            guessed = select_dataset_path_from_prompt(intent.raw_prompt)
+            if guessed:
+                intent.dataset_path = guessed
+                logger.info("从提示词回填数据集路径: %s", guessed)
+
+        try:
+            return resolver.resolve(
+                intent,
+                auto_threshold=self.args.auto_threshold,
+                task_context=self._build_task_context(intent),
+            )
+        except ValueError as exc:
+            raise AutoTrain4Error(str(exc)) from exc
 
     def _run_auto_train2(
         self,
@@ -497,19 +581,28 @@ class AutoTrain4Orchestrator:
         return find_latest_config(task_type)
 
     def _find_recent_run_dirs(self, max_count: int = 3) -> List[Path]:
-        """查找扫描目录下最近的几个 run_dir（按修改时间）。"""
+        """查找所有扫描根下最近的几个 run_dir（按修改时间）。"""
         run_dirs: List[Path] = []
-        if not self.scan_dir.exists():
-            return run_dirs
-        for project_dir in self.scan_dir.iterdir():
-            if not project_dir.is_dir():
+        for scan_root in self.scan_dirs:
+            if not scan_root.exists():
                 continue
-            work_dir = project_dir / "work"
-            if not work_dir.exists():
+            try:
+                projects = list(scan_root.iterdir())
+            except OSError:
                 continue
-            for run_dir in work_dir.iterdir():
-                if run_dir.is_dir():
-                    run_dirs.append(run_dir)
+            for project_dir in projects:
+                if not project_dir.is_dir():
+                    continue
+                work_dir = project_dir / "work"
+                if not work_dir.exists():
+                    continue
+                try:
+                    children = list(work_dir.iterdir())
+                except OSError:
+                    continue
+                for run_dir in children:
+                    if run_dir.is_dir():
+                        run_dirs.append(run_dir)
         run_dirs.sort(key=lambda p: p.stat().st_mtime, reverse=True)
         return run_dirs[:max_count]
 
@@ -767,12 +860,24 @@ def main() -> int:
     )
     parser.add_argument(
         "--scan-dir",
-        default="AI训练平台测试",
-        help="数据集根目录，默认: AI训练平台测试",
+        action="append",
+        default=None,
+        help=(
+            "数据集扫描根目录，可重复指定以启用多根浅扫；"
+            "也可在单个值内用 ; 或 | 分隔多个根。"
+            "默认: AI训练平台测试。"
+            "示例: --scan-dir Z:\\data --scan-dir Y:\\data"
+            " 或 --scan-dir \"Z:\\data;Y:\\data;C:\\data\""
+        ),
     )
     parser.add_argument(
         "--folder",
-        help="直接指定数据集文件夹名（跳过语义匹配）",
+        help="直接指定数据集目录：可为绝对路径，或任一 --scan-dir 下的文件夹名（跳过语义匹配）",
+    )
+    parser.add_argument(
+        "--output-dir",
+        help="模型与 work 归档根目录；指定后 run 落在 <output-dir>/work/<run_id>/，"
+             "不再默认写到数据集项目目录下",
     )
     parser.add_argument(
         "--config-out",

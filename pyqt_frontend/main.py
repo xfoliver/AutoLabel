@@ -41,6 +41,7 @@ from PyQt5.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
+    QScrollArea,
     QSizePolicy,
     QTextEdit,
     QVBoxLayout,
@@ -465,51 +466,10 @@ class SettingsDialog(QDialog):
 
 
 # ---------------------------------------------------------------------------
-# 阶段式折叠日志面板
+# Web 风格执行控制台
 # ---------------------------------------------------------------------------
-class LogStage(QWidget):
-    """单个可折叠日志阶段。"""
-
-    def __init__(self, title: str, parent: Optional[QWidget] = None) -> None:
-        super().__init__(parent)
-        self._title = title
-
-        layout = QVBoxLayout(self)
-        layout.setSpacing(4)
-        layout.setContentsMargins(0, 0, 0, 6)
-
-        self._header = QPushButton(f"▼ {title}")
-        self._header.setObjectName("logStageHeader")
-        self._header.setCursor(Qt.PointingHandCursor)
-        self._header.setFocusPolicy(Qt.NoFocus)
-        self._header.clicked.connect(self._toggle)
-        layout.addWidget(self._header)
-
-        self._content = QTextEdit()
-        self._content.setObjectName("logStageContent")
-        self._content.setReadOnly(True)
-        self._content.setMinimumHeight(80)
-        layout.addWidget(self._content)
-
-    def append(self, line: str) -> None:
-        self._content.append(line)
-        scrollbar = self._content.verticalScrollBar()
-        scrollbar.setValue(scrollbar.maximum())
-
-    def _toggle(self) -> None:
-        visible = not self._content.isVisible()
-        self._content.setVisible(visible)
-        prefix = "▼" if visible else "▶"
-        self._header.setText(f"{prefix} {self._title}")
-
-    def set_expanded(self, expanded: bool) -> None:
-        self._content.setVisible(expanded)
-        prefix = "▼" if expanded else "▶"
-        self._header.setText(f"{prefix} {self._title}")
-
-
 class CollapsibleLogPanel(QWidget):
-    """阶段式折叠日志面板：按阶段分组，每组可折叠。"""
+    """Web 风格阶段控制台，保留原有 append/clear 调用接口。"""
 
     _STAGE_MARKERS = [
         (r"={5,}\s*(.+?)\s*={5,}", lambda m: m.group(1).strip()),
@@ -522,22 +482,102 @@ class CollapsibleLogPanel(QWidget):
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
-        self._stages: list[LogStage] = []
+        self._stages: list[Dict[str, Any]] = []
+        self._all_lines: list[str] = []
+        self._current_stage: Optional[Dict[str, Any]] = None
+        self._selected_stage: Optional[int] = None
 
-        layout = QVBoxLayout(self)
-        layout.setSpacing(0)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setAlignment(Qt.AlignTop)
-        self.setLayout(layout)
+        root = QHBoxLayout(self)
+        root.setSpacing(0)
+        root.setContentsMargins(0, 0, 0, 0)
 
-        self._layout = layout
-        self._current_stage: Optional[LogStage] = None
+        rail = QFrame()
+        rail.setObjectName("logStageRail")
+        rail.setFixedWidth(174)
+        rail_layout = QVBoxLayout(rail)
+        rail_layout.setSpacing(7)
+        rail_layout.setContentsMargins(12, 14, 12, 14)
+
+        rail_title = QLabel("EXECUTION FLOW")
+        rail_title.setObjectName("logRailTitle")
+        rail_layout.addWidget(rail_title)
+
+        self._all_button = QPushButton("◉  全部输出")
+        self._all_button.setObjectName("logStageNavActive")
+        self._all_button.setCursor(Qt.PointingHandCursor)
+        self._all_button.setFocusPolicy(Qt.NoFocus)
+        self._all_button.clicked.connect(lambda: self._select_stage(None))
+        rail_layout.addWidget(self._all_button)
+
+        stage_host = QWidget()
+        stage_host.setObjectName("logStageHost")
+        self._stage_layout = QVBoxLayout(stage_host)
+        self._stage_layout.setSpacing(5)
+        self._stage_layout.setContentsMargins(0, 0, 0, 0)
+        self._stage_layout.setAlignment(Qt.AlignTop)
+
+        stage_scroll = QScrollArea()
+        stage_scroll.setObjectName("logStageScroll")
+        stage_scroll.setWidgetResizable(True)
+        stage_scroll.setFrameShape(QFrame.NoFrame)
+        stage_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        stage_scroll.setWidget(stage_host)
+        rail_layout.addWidget(stage_scroll, 1)
+
+        root.addWidget(rail)
+
+        console = QFrame()
+        console.setObjectName("logConsole")
+        console_layout = QVBoxLayout(console)
+        console_layout.setSpacing(0)
+        console_layout.setContentsMargins(0, 0, 0, 0)
+
+        toolbar = QFrame()
+        toolbar.setObjectName("logConsoleToolbar")
+        toolbar_layout = QHBoxLayout(toolbar)
+        toolbar_layout.setContentsMargins(14, 9, 14, 9)
+        toolbar_layout.setSpacing(8)
+
+        for color_name in ("red", "amber", "green"):
+            dot = QLabel()
+            dot.setObjectName(f"consoleDot{color_name.title()}")
+            dot.setFixedSize(8, 8)
+            toolbar_layout.addWidget(dot)
+
+        console_title = QLabel("AUTOTRAIN / LIVE CONSOLE")
+        console_title.setObjectName("logConsoleTitle")
+        toolbar_layout.addSpacing(5)
+        toolbar_layout.addWidget(console_title)
+        toolbar_layout.addStretch()
+
+        live = QLabel("● LIVE")
+        live.setObjectName("logConsoleLive")
+        toolbar_layout.addWidget(live)
+        console_layout.addWidget(toolbar)
+
+        self._console = QPlainTextEdit()
+        self._console.setObjectName("logConsoleOutput")
+        self._console.setReadOnly(True)
+        self._console.setLineWrapMode(QPlainTextEdit.NoWrap)
+        self._console.setPlaceholderText(
+            "$ 等待任务启动…\n\n训练过程、状态变化和错误信息将在这里实时显示。"
+        )
+        console_layout.addWidget(self._console, 1)
+        root.addWidget(console, 1)
+
+        self.setMinimumHeight(300)
 
     def clear(self) -> None:
-        for stage in self._stages:
-            stage.deleteLater()
+        while self._stage_layout.count():
+            item = self._stage_layout.takeAt(0)
+            if item.widget() is not None:
+                item.widget().deleteLater()
         self._stages.clear()
+        self._all_lines.clear()
         self._current_stage = None
+        self._selected_stage = None
+        self._console.clear()
+        self._refresh_nav_styles()
 
     def append(self, line: str) -> None:
         title = self._detect_stage_title(line)
@@ -547,7 +587,16 @@ class CollapsibleLogPanel(QWidget):
         if self._current_stage is None:
             self._start_stage("日志")
 
-        self._current_stage.append(line)
+        self._all_lines.append(line)
+        self._current_stage["lines"].append(line)
+
+        if self._selected_stage is None:
+            self._console.appendPlainText(line)
+        elif self._selected_stage == len(self._stages) - 1:
+            self._console.appendPlainText(line)
+
+        scrollbar = self._console.verticalScrollBar()
+        scrollbar.setValue(scrollbar.maximum())
 
     def _detect_stage_title(self, line: str) -> Optional[str]:
         import re
@@ -559,26 +608,61 @@ class CollapsibleLogPanel(QWidget):
         return None
 
     def _start_stage(self, title: str) -> None:
-        # 如果当前阶段还是空的“日志”占位，直接复用
-        if self._current_stage is not None and self._title_of(self._current_stage) == "日志":
-            content = self._current_stage._content.toPlainText().strip()
-            if not content:
-                self._current_stage._title = title
-                self._current_stage._header.setText(f"▼ {title}")
-                return
+        if self._current_stage is not None:
+            if self._current_stage["state"] != "error":
+                self._current_stage["state"] = "done"
+            self._update_stage_button(self._current_stage)
 
-        # 把之前的阶段折叠起来
-        for stage in self._stages:
-            stage.set_expanded(False)
+        index = len(self._stages)
+        button = QPushButton()
+        button.setCursor(Qt.PointingHandCursor)
+        button.setFocusPolicy(Qt.NoFocus)
+        button.clicked.connect(lambda _checked=False, i=index: self._select_stage(i))
 
-        stage = LogStage(title, self)
+        stage: Dict[str, Any] = {
+            "title": title,
+            "lines": [],
+            "button": button,
+            "state": "error" if "错误" in title else "running",
+            "index": index,
+        }
         self._stages.append(stage)
-        self._layout.addWidget(stage)
+        self._stage_layout.addWidget(button)
         self._current_stage = stage
+        self._update_stage_button(stage)
+        self._refresh_nav_styles()
+
+    def _select_stage(self, index: Optional[int]) -> None:
+        self._selected_stage = index
+        lines = self._all_lines if index is None else self._stages[index]["lines"]
+        self._console.setPlainText("\n".join(lines))
+        scrollbar = self._console.verticalScrollBar()
+        scrollbar.setValue(scrollbar.maximum())
+        self._refresh_nav_styles()
+
+    def _refresh_nav_styles(self) -> None:
+        self._all_button.setObjectName(
+            "logStageNavActive" if self._selected_stage is None else "logStageNav"
+        )
+        self._repolish(self._all_button)
+        for stage in self._stages:
+            button = stage["button"]
+            selected = stage["index"] == self._selected_stage
+            button.setObjectName("logStageNavActive" if selected else "logStageNav")
+            self._repolish(button)
+
+    def _update_stage_button(self, stage: Dict[str, Any]) -> None:
+        prefix = {"running": "●", "done": "✓", "error": "×"}.get(stage["state"], "○")
+        number = stage["index"] + 1
+        title = stage["title"].replace("AUTO TRAIN 4.0", "AUTO TRAIN").strip()
+        if len(title) > 20:
+            title = title[:19] + "…"
+        stage["button"].setText(f"{prefix}  {number:02d}  {title}")
 
     @staticmethod
-    def _title_of(stage: LogStage) -> str:
-        return stage._title
+    def _repolish(widget: QWidget) -> None:
+        widget.style().unpolish(widget)
+        widget.style().polish(widget)
 
 
 # ---------------------------------------------------------------------------
@@ -1182,7 +1266,7 @@ class MainWindow(QMainWindow):
         log_card.setObjectName("card")
         log_layout = QVBoxLayout(log_card)
         log_header = QHBoxLayout()
-        log_title = QLabel("运行日志")
+        log_title = QLabel("执行控制台")
         log_title.setObjectName("cardTitle")
         log_header.addWidget(log_title)
         log_header.addStretch()
@@ -1873,28 +1957,111 @@ class MainWindow(QMainWindow):
             }
             QWidget#logPanel {
                 background: transparent;
+                border: 1px solid #dde2ec;
+                border-radius: 16px;
             }
-            QPushButton#logStageHeader {
-                background: transparent;
-                color: #374151;
-                font-size: 14px;
-                font-weight: bold;
+            QFrame#logStageRail {
+                background: #f7f8fc;
                 border: none;
-                border-radius: 8px;
-                padding: 8px 4px;
+                border-top-left-radius: 15px;
+                border-bottom-left-radius: 15px;
+            }
+            QLabel#logRailTitle {
+                color: #929bad;
+                font-size: 10px;
+                font-weight: 800;
+                letter-spacing: 1px;
+                padding: 2px 5px 6px 5px;
+            }
+            QWidget#logStageHost,
+            QScrollArea#logStageScroll,
+            QScrollArea#logStageScroll > QWidget > QWidget {
+                background: transparent;
+                border: none;
+            }
+            QPushButton#logStageNav,
+            QPushButton#logStageNavActive {
+                background: transparent;
+                color: #697386;
+                font-size: 11px;
+                font-weight: 600;
+                border: none;
+                border-radius: 9px;
+                padding: 9px 8px;
                 text-align: left;
             }
-            QPushButton#logStageHeader:hover {
-                background: rgba(108, 92, 231, 0.10);
+            QPushButton#logStageNav:hover {
+                background: #eff1f7;
+                color: #414b5f;
             }
-            QTextEdit#logStageContent {
-                background: #ffffff;
-                border: 1px solid #e5e7eb;
-                border-radius: 10px;
-                padding: 10px;
+            QPushButton#logStageNavActive {
+                background: #ebe8ff;
+                color: #6655d9;
+                font-weight: 800;
+            }
+            QFrame#logConsole {
+                background: #0d1423;
+                border: none;
+                border-top-right-radius: 15px;
+                border-bottom-right-radius: 15px;
+            }
+            QFrame#logConsoleToolbar {
+                background: #151e2f;
+                border: none;
+                border-bottom: 1px solid #222d42;
+                border-top-right-radius: 15px;
+            }
+            QLabel#consoleDotRed,
+            QLabel#consoleDotAmber,
+            QLabel#consoleDotGreen {
+                border-radius: 4px;
+                background: #ff6b72;
+            }
+            QLabel#consoleDotAmber {
+                background: #f2bd55;
+            }
+            QLabel#consoleDotGreen {
+                background: #38c98d;
+            }
+            QLabel#logConsoleTitle {
+                color: #8390a5;
+                font-size: 10px;
+                font-weight: 700;
+                letter-spacing: 1px;
+            }
+            QLabel#logConsoleLive {
+                color: #4dd4a1;
+                background: #122d2a;
+                border: 1px solid #1e473e;
+                border-radius: 8px;
+                padding: 3px 7px;
+                font-size: 9px;
+                font-weight: 800;
+            }
+            QPlainTextEdit#logConsoleOutput {
+                background: #0d1423;
+                border: none;
+                border-bottom-right-radius: 15px;
+                padding: 14px 16px;
                 font-family: "Consolas", "SFMono-Regular", monospace;
-                font-size: 13px;
-                color: #1f2937;
+                font-size: 12px;
+                color: #c7d0df;
+                selection-background-color: #6655d9;
+                selection-color: #ffffff;
+            }
+            QPlainTextEdit#logConsoleOutput QScrollBar:vertical {
+                background: #0d1423;
+                width: 10px;
+                margin: 4px 2px 4px 0;
+            }
+            QPlainTextEdit#logConsoleOutput QScrollBar::handle:vertical {
+                background: #344057;
+                border-radius: 4px;
+                min-height: 28px;
+            }
+            QPlainTextEdit#logConsoleOutput QScrollBar::add-line:vertical,
+            QPlainTextEdit#logConsoleOutput QScrollBar::sub-line:vertical {
+                height: 0;
             }
 
             /* 快捷模板 */

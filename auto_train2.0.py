@@ -92,6 +92,9 @@ class DLCVAutoTrainer:
         self.frontend_url: str = "http://localhost:8842"
         self.project_id: Optional[str] = None
         self.training_id: Optional[str] = None
+        # 一旦通过 WebBridge 或 API 成功拿到 training_id，禁止再二次 start
+        self.training_launch_attempted: bool = False
+        self.training_failure_detail: Optional[Dict[str, Any]] = None
 
     # ------------------------------------------------------------------
     # 配置加载与校验
@@ -695,8 +698,20 @@ class DLCVAutoTrainer:
         """直接调用后端接口开始训练。"""
         if not self.project_id:
             raise AutoTrainError("project_id 为空，无法开始训练")
+        if self.training_id:
+            logger.warning(
+                "已存在 training_id=%s，跳过重复 API 启动，避免二次拉起训练",
+                self.training_id,
+            )
+            return self.training_id
+        if self.training_launch_attempted:
+            raise AutoTrainError(
+                "本次运行已尝试启动过训练且未拿到可用 training_id，拒绝再次 API 启动，"
+                "请检查后端 session / platform_output.log"
+            )
         hyper_params = self.config["training"].get("hyperparameters", {})
         logger.info("通过后端 API 开始训练项目: %s", self.project_id)
+        self.training_launch_attempted = True
         result = self._api_post("/training/start/", params={"project_id": self.project_id}, json_data=hyper_params)
         if result.get("code") != 0:
             raise AutoTrainError(f"开始训练失败: {result.get('message')}")
@@ -765,12 +780,154 @@ class DLCVAutoTrainer:
         logger.warning("超时未检测到新的 training_id")
         return None
 
-    def _fetch_session_status(self, training_id: str) -> Optional[str]:
+    def _fetch_session(self, training_id: str) -> Optional[Dict[str, Any]]:
+        """拉取完整 training session 记录。"""
         try:
             session = self._api_get(f"/db/training_sessions/{training_id}")
-            return session.get("status")
+            if isinstance(session, dict):
+                return session
+        except Exception as e:
+            logger.warning("获取 training session 失败 (%s): %s", training_id, e)
+        return None
+
+    def _fetch_session_status(self, training_id: str) -> Optional[str]:
+        session = self._fetch_session(training_id)
+        if not session:
+            return None
+        return session.get("status")
+
+    def _extract_session_error_text(self, session: Optional[Dict[str, Any]]) -> str:
+        """从 session 字典中尽量抽出可读错误信息。"""
+        if not session:
+            return ""
+        chunks: List[str] = []
+        for key in (
+            "error",
+            "error_message",
+            "err_msg",
+            "message",
+            "fail_reason",
+            "failure_reason",
+            "exception",
+            "traceback",
+            "stack",
+            "detail",
+            "details",
+            "log",
+            "logs",
+            "remark",
+            "note",
+        ):
+            val = session.get(key)
+            if val is None or val == "":
+                continue
+            if isinstance(val, (dict, list)):
+                try:
+                    text = json.dumps(val, ensure_ascii=False)
+                except Exception:
+                    text = str(val)
+            else:
+                text = str(val).strip()
+            if text and text not in chunks:
+                chunks.append(text)
+        return " | ".join(chunks)
+
+    def _work_dir(self) -> Optional[Path]:
+        raw = (self.config.get("project") or {}).get("work_dir") or (
+            self.config.get("project") or {}
+        ).get("run_dir")
+        if not raw:
+            return None
+        try:
+            path = Path(raw)
+            path.mkdir(parents=True, exist_ok=True)
+            return path
         except Exception:
             return None
+
+    def capture_training_diagnostics(
+        self,
+        training_id: Optional[str] = None,
+        reason: str = "",
+    ) -> Optional[Path]:
+        """把后端 session / 全局 status / 平台输出尾部落到 work_dir，便于失败复盘。"""
+        tid = training_id or self.training_id
+        work_dir = self._work_dir()
+        payload: Dict[str, Any] = {
+            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "reason": reason,
+            "project_id": self.project_id,
+            "training_id": tid,
+        }
+
+        session = self._fetch_session(tid) if tid else None
+        if session is not None:
+            payload["session"] = session
+            payload["session_status"] = session.get("status")
+            payload["session_progress"] = session.get("progress")
+            payload["session_error"] = self._extract_session_error_text(session)
+
+        try:
+            payload["training_status"] = self._api_get("/training/status/")
+        except Exception as e:
+            payload["training_status_error"] = str(e)
+
+        if self.project_id:
+            try:
+                payload["project_history"] = self.get_project_training_history(self.project_id)[:5]
+            except Exception as e:
+                payload["project_history_error"] = str(e)
+
+        # 平台控制台尾部
+        if hasattr(self, "platform_output_log") and self.platform_output_log.exists():
+            try:
+                text = self.platform_output_log.read_text(encoding="utf-8", errors="replace")
+                lines = text.splitlines()
+                payload["platform_output_tail"] = lines[-80:]
+                payload["platform_output_log"] = str(self.platform_output_log)
+            except Exception as e:
+                payload["platform_output_error"] = str(e)
+
+        self.training_failure_detail = payload
+        err_text = payload.get("session_error") or ""
+        if err_text:
+            logger.error("训练引擎错误摘要: %s", err_text[:2000])
+        elif payload.get("session_status"):
+            logger.error(
+                "训练 session 状态=%s progress=%s（后端未返回明确 error 字段）",
+                payload.get("session_status"),
+                payload.get("session_progress"),
+            )
+
+        if work_dir is None:
+            logger.warning("无 work_dir，训练诊断信息仅保留在内存/日志中")
+            return None
+
+        out_path = work_dir / "training_failure.json"
+        try:
+            with open(out_path, "w", encoding="utf-8") as fh:
+                json.dump(payload, fh, ensure_ascii=False, indent=2, default=str)
+            logger.info("训练失败诊断已写入: %s", out_path)
+        except Exception as e:
+            logger.warning("写入 training_failure.json 失败: %s", e)
+            return None
+
+        # 同步追加一份人类可读摘要到 train 侧日志
+        self._dump_platform_output_tail(n_lines=50)
+        return out_path
+
+    def _raise_training_failed(self, status: str, training_id: Optional[str] = None) -> None:
+        tid = training_id or self.training_id
+        self.capture_training_diagnostics(tid, reason=f"terminal_status={status}")
+        detail = ""
+        if self.training_failure_detail:
+            detail = self.training_failure_detail.get("session_error") or ""
+        msg = f"训练未成功完成，状态: {status}"
+        if tid:
+            msg += f", training_id={tid}"
+        if detail:
+            msg += f", error={detail[:500]}"
+        raise AutoTrainError(msg)
 
     TERMINAL_STATUSES = {"已完成", "训练失败", "训练中止", "未知错误"}
     STARTED_STATUSES = {"已启动", "进行中"}
@@ -797,7 +954,7 @@ class DLCVAutoTrainer:
             if session_status in self.TERMINAL_STATUSES:
                 logger.info("训练结束，最终状态: %s", session_status)
                 if session_status != "已完成":
-                    raise AutoTrainError(f"训练未成功完成，状态: {session_status}")
+                    self._raise_training_failed(session_status or "未知")
                 return
 
             if session_status in self.STARTED_STATUSES:
@@ -821,7 +978,7 @@ class DLCVAutoTrainer:
             else:
                 progress_info = ""
                 try:
-                    session = self._api_get(f"/db/training_sessions/{self.training_id}")
+                    session = self._fetch_session(self.training_id) or {}
                     progress = session.get("progress")
                     if progress is not None:
                         progress_info = f", 进度: {progress:.1%}, 状态: {session_status}"
@@ -839,7 +996,7 @@ class DLCVAutoTrainer:
                     logger.info("训练仍在队列中，将继续后台运行")
                     return
                 if final_status != "已完成":
-                    raise AutoTrainError(f"训练未成功完成，最终状态: {final_status or '未知'}")
+                    self._raise_training_failed(final_status or "未知")
                 return
 
             # session 连续多次查不到，且当前也没有运行中的任务 -> 大概率 ID 错了或已被清理
@@ -848,6 +1005,10 @@ class DLCVAutoTrainer:
                 if final_status == "排队中":
                     logger.info("训练仍在队列中，将继续后台运行")
                     return
+                self.capture_training_diagnostics(
+                    self.training_id,
+                    reason="missing_session",
+                )
                 raise AutoTrainError(
                     f"连续 {MAX_MISSING_SESSION} 次未查询到 training_id={self.training_id}，"
                     "可能拿到的不是本次训练 ID 或训练已被后端清理"
@@ -858,6 +1019,7 @@ class DLCVAutoTrainer:
                 if final_status == "排队中":
                     logger.info("监控超时但训练仍在队列中，将继续后台运行")
                     return
+                self.capture_training_diagnostics(self.training_id, reason="monitor_timeout")
                 raise AutoTrainError(f"监控超时 ({timeout}s)")
             time.sleep(interval)
 
@@ -1147,12 +1309,18 @@ class DLCVAutoTrainer:
             logger.info("WebBridge 任务执行结果: %s", result.message)
 
             # 等待并识别本次新创建的 training_id
+            # WebBridge 点击后可能异步建 session：先等 new id，再查是否已有运行中/历史 id
             self.training_id = self._wait_for_new_training_id(previous_id, timeout=60)
             if not self.training_id:
                 logger.warning("未能在 60s 内发现新的 training_id，尝试兜底查询")
                 self.training_id = self.discover_training_id(self.project_id)
 
-            if not self.training_id:
+            if self.training_id:
+                # UI 路径已观察到 training session，禁止外层再 API start
+                self.training_launch_attempted = True
+                logger.info("WebBridge 路径已关联 training_id=%s", self.training_id)
+            else:
+                # 仅当完全没有 session 时才允许 API 兜底启动一次
                 logger.warning("WebBridge 未返回 training_id，尝试使用后端 API 兜底启动训练")
                 self.start_training_api()
 
@@ -1162,8 +1330,22 @@ class DLCVAutoTrainer:
             logger.error("Kimi WebBridge 调用失败: %s", e)
             self._save_error_screenshot(bridge, "webbridge_error")
             raise AutoTrainError(f"WebBridge 调用失败: {e}")
+        except AutoTrainError:
+            # 训练失败类错误：尽量落盘诊断后再抛
+            if self.training_id and not self.training_failure_detail:
+                try:
+                    self.capture_training_diagnostics(self.training_id, reason="webbridge_autotrain_error")
+                except Exception:
+                    pass
+            self._save_error_screenshot(bridge, "automation_error")
+            raise
         except Exception as e:
             logger.exception("WebBridge 自动化发生未预期错误: %s", e)
+            if self.training_id:
+                try:
+                    self.capture_training_diagnostics(self.training_id, reason="webbridge_unexpected_error")
+                except Exception:
+                    pass
             self._save_error_screenshot(bridge, "automation_error")
             raise
         finally:
@@ -1329,7 +1511,36 @@ class DLCVAutoTrainer:
                 training_launched = bool(self.training_id)
             except Exception as e:
                 logger.error("WebBridge 自动化失败: %s", e)
-                logger.info("尝试使用后端 API 兜底启动训练")
+                # 关键：已经有 training_id / 已尝试启动过，则禁止再 API 二次拉起
+                if self.training_id:
+                    training_launched = True
+                    logger.error(
+                        "WebBridge 路径已产生 training_id=%s，不再 API 兜底二次启动；改为采集诊断",
+                        self.training_id,
+                    )
+                    try:
+                        if not self.training_failure_detail:
+                            self.capture_training_diagnostics(
+                                self.training_id,
+                                reason="webbridge_failed_after_launch",
+                            )
+                    except Exception:
+                        pass
+                    # 若错误本身已是 AutoTrainError（含训练失败），直接抛出
+                    if isinstance(e, AutoTrainError):
+                        raise
+                    raise AutoTrainError(
+                        f"训练已启动但 WebBridge/监控失败: {e}; "
+                        f"training_id={self.training_id}"
+                    ) from e
+                if self.training_launch_attempted:
+                    logger.error("本次已尝试启动训练，跳过重复 API 兜底")
+                    try:
+                        self.capture_training_diagnostics(reason="launch_attempted_no_retry")
+                    except Exception:
+                        pass
+                    raise
+                logger.info("尝试使用后端 API 兜底启动训练（仅一次）")
                 try:
                     self.start_training_api()
                     training_launched = True
@@ -1337,10 +1548,17 @@ class DLCVAutoTrainer:
                         try:
                             self.monitor_training()
                         except AutoTrainError as me:
-                            # 训练已启动，监控过程中因排队/超时而失败时，不标记任务失败
+                            # 明确失败状态要向上抛；仅排队/超时类可降级
+                            msg = str(me)
+                            if "未成功完成" in msg or "训练失败" in msg or "训练中止" in msg:
+                                raise
                             logger.warning("训练监控未等到最终状态: %s", me)
                 except Exception as api_e:
                     logger.error("后端 API 兜底也失败: %s", api_e)
+                    try:
+                        self.capture_training_diagnostics(reason="api_fallback_failed")
+                    except Exception:
+                        pass
                     raise
         else:
             self.start_training_api()
@@ -1349,6 +1567,9 @@ class DLCVAutoTrainer:
                 try:
                     self.monitor_training()
                 except AutoTrainError as me:
+                    msg = str(me)
+                    if "未成功完成" in msg or "训练失败" in msg or "训练中止" in msg:
+                        raise
                     logger.warning("训练监控未等到最终状态: %s", me)
 
         if training_launched:
@@ -1365,6 +1586,13 @@ class DLCVAutoTrainer:
                             self.training_id,
                             st,
                         )
+                        try:
+                            self.capture_training_diagnostics(
+                                self.training_id,
+                                reason=f"final_status={st}",
+                            )
+                        except Exception:
+                            pass
             except Exception:
                 pass
 
@@ -1375,13 +1603,13 @@ class DLCVAutoTrainer:
                     "训练已结束但未成功（training_id=%s），任务视为失败",
                     self.training_id or "未知",
                 )
-                # 失败时不要再等人关窗口；直接收尾，方便多任务继续
-                keep_open = False
-                # 通过异常让 main() 返回非 0，上层 4.0 才能正确记 failed_tasks
-                # 但若调用方已 catch 并继续，至少日志明确
-                raise AutoTrainError(
-                    f"训练未成功完成，training_id={self.training_id}"
-                )
+                detail = ""
+                if self.training_failure_detail:
+                    detail = self.training_failure_detail.get("session_error") or ""
+                msg = f"训练未成功完成，training_id={self.training_id}"
+                if detail:
+                    msg += f", error={detail[:500]}"
+                raise AutoTrainError(msg)
 
         # 训练结束后若配置为保持窗口打开，统一等待关闭信号（覆盖 WebBridge 成功和 API 兜底两条路径）
         # 注意：失败路径已在上面 raise，不会走到这里的 keep_open

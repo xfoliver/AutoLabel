@@ -8,9 +8,15 @@
 import logging
 import re
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from .common import TASK_ALIASES
+from .common import (
+    TASK_ALIASES,
+    looks_like_filesystem_path,
+    select_dataset_path_from_prompt,
+    select_output_path_from_prompt,
+)
 from .llm_client import LLMClient
 
 logger = logging.getLogger(__name__)
@@ -35,6 +41,8 @@ class TrainIntent:
     task_type: str
     categories: List[str] = field(default_factory=list)
     dataset_hint: str = ""
+    dataset_path: str = ""
+    output_dir: str = ""
     mode: str = "train"  # train / dry_run / evaluate / test
     raw_prompt: str = ""
     needs_training: bool = True
@@ -49,6 +57,8 @@ class TrainIntent:
             "task_type": self.task_type,
             "categories": self.categories,
             "dataset_hint": self.dataset_hint,
+            "dataset_path": self.dataset_path,
+            "output_dir": self.output_dir,
             "mode": self.mode,
             "raw_prompt": self.raw_prompt,
             "needs_training": self.needs_training,
@@ -108,6 +118,8 @@ class IntentParser:
                     task_type="",
                     categories=[],
                     dataset_hint="",
+                    dataset_path="",
+                    output_dir="",
                     mode="chat",
                     raw_prompt=prompt,
                     needs_training=False,
@@ -127,6 +139,8 @@ class IntentParser:
                     task_type="",
                     categories=[],
                     dataset_hint="",
+                    dataset_path="",
+                    output_dir="",
                     mode="chat",
                     raw_prompt=prompt,
                     needs_training=False,
@@ -138,6 +152,10 @@ class IntentParser:
                 )
             ]
 
+        # 整句级路径兜底：即使用户写了绝对路径而 LLM 漏提，也能直达
+        prompt_dataset_path = select_dataset_path_from_prompt(prompt) or ""
+        prompt_output_dir = select_output_path_from_prompt(prompt) or ""
+
         intents: List[TrainIntent] = []
         for idx, parsed in enumerate(parsed_list):
             if not isinstance(parsed, dict):
@@ -146,7 +164,18 @@ class IntentParser:
             task_type = self._canonicalize_task_type(parsed.get("task_type", ""))
             mode = self._canonicalize_mode(parsed.get("mode", "train"), prompt)
             categories = self._canonicalize_categories(parsed.get("categories", []))
-            dataset_hint = str(parsed.get("dataset_hint", "")).strip()
+            dataset_hint = str(parsed.get("dataset_hint", "") or "").strip()
+            dataset_path, dataset_hint = self._resolve_dataset_fields(
+                parsed,
+                dataset_hint=dataset_hint,
+                prompt=prompt,
+                prompt_dataset_path=prompt_dataset_path,
+            )
+            output_dir = self._resolve_output_dir(
+                parsed,
+                prompt=prompt,
+                prompt_output_dir=prompt_output_dir,
+            )
             baseline_model = self._extract_baseline_model(parsed.get("baseline_model"), prompt)
             wants_baseline = self._wants_baseline_comparison(
                 parsed.get("wants_baseline"), baseline_model, prompt
@@ -176,6 +205,8 @@ class IntentParser:
                     task_type=task_type,
                     categories=categories,
                     dataset_hint=dataset_hint,
+                    dataset_path=dataset_path,
+                    output_dir=output_dir,
                     mode=mode,
                     raw_prompt=prompt,
                     needs_training=needs_training,
@@ -191,6 +222,59 @@ class IntentParser:
             raise ValueError("LLM 未返回任何有效任务")
 
         return intents
+
+    def _resolve_dataset_fields(
+        self,
+        parsed: Dict[str, Any],
+        dataset_hint: str,
+        prompt: str,
+        prompt_dataset_path: str,
+    ) -> tuple:
+        """合并 LLM 字段与提示词路径，得到 (dataset_path, dataset_hint)。"""
+        raw_path = str(
+            parsed.get("dataset_path")
+            or parsed.get("dataset_dir")
+            or parsed.get("data_path")
+            or ""
+        ).strip()
+
+        # dataset_hint 若本身就是路径，提升为 dataset_path
+        if not raw_path and dataset_hint and looks_like_filesystem_path(dataset_hint):
+            raw_path = dataset_hint
+
+        if not raw_path and prompt_dataset_path:
+            raw_path = prompt_dataset_path
+
+        dataset_path = raw_path
+        # 若 hint 只是路径的副本，保留文件夹名方便日志展示
+        hint_out = dataset_hint
+        if dataset_path:
+            if not hint_out or looks_like_filesystem_path(hint_out):
+                try:
+                    hint_out = Path(dataset_path).name
+                except Exception:
+                    hint_out = dataset_hint
+            logger.info("解析到显式数据集路径: %s", dataset_path)
+        return dataset_path, hint_out
+
+    def _resolve_output_dir(
+        self,
+        parsed: Dict[str, Any],
+        prompt: str,
+        prompt_output_dir: str,
+    ) -> str:
+        """合并 LLM 与提示词中的模型输出目录。"""
+        raw = str(
+            parsed.get("output_dir")
+            or parsed.get("model_output_dir")
+            or parsed.get("export_dir")
+            or ""
+        ).strip()
+        if not raw and prompt_output_dir:
+            raw = prompt_output_dir
+        if raw:
+            logger.info("解析到模型输出目录: %s", raw)
+        return raw
 
     def _canonicalize_task_type(self, raw: str) -> str:
         """把 LLM 返回的任务类型规范化为内部标准名。"""

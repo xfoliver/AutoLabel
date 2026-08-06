@@ -69,14 +69,37 @@ def cleanup_run_artifacts(
     remove_path(run_dir / "webview2_user_data")
     remove_path(run_dir / "stdout.log")
 
-    # 辅助进程日志只有非空时才有诊断价值。
+    # 失败时完整保留诊断日志；成功时仅删除空的辅助日志。
+    # platform_output.log / webview2_cdp_*.log / training_failure.json
+    # 在失败场景下是定位训练引擎错误的关键证据，绝不能清掉。
+    diagnostic_keep_on_failure = {
+        "platform_output.log",
+        "training_failure.json",
+        "exception.json",
+        "stderr.log",
+        "train.log",
+        "runtime_info.json",
+        "config.json",
+    }
     for pattern in ("platform_output.log", "webview2_cdp_*.log"):
         for path in run_dir.glob(pattern):
             try:
-                if path.is_file() and path.stat().st_size == 0:
+                if not path.is_file():
+                    continue
+                if not effective_success:
+                    # 失败：无论是否为空都保留（空文件本身也说明平台没吐日志）
+                    continue
+                if path.stat().st_size == 0:
                     remove_path(path)
             except OSError as exc:
                 result["warnings"].append(f"无法检查 {path.name}: {exc}")
+
+    # 显式确保失败诊断文件不会被后续逻辑误删
+    if not effective_success:
+        for name in diagnostic_keep_on_failure:
+            path = run_dir / name
+            if path.exists():
+                logger.info("失败运行保留诊断文件: %s", path.name)
 
     checkpoints_dir = run_dir / "checkpoints"
     if effective_success:
@@ -179,17 +202,38 @@ class RunContext:
         folder_name: Optional[str] = None,
         run_id: Optional[str] = None,
         work_root: Optional[Path] = None,
+        output_dir: Optional[Path] = None,
     ):
         self.dataset_dir = Path(dataset_dir).resolve()
-        # 运行归档目录放在项目文件夹下（如 2-CLS/work/），而不是训练集子目录下，
+        # 运行归档目录默认放在项目文件夹下（如 2-CLS/work/），而不是训练集子目录下，
         # 这样 dva/dvp、录屏、日志更容易找到，也与旧版行为一致。
+        # 若用户指定了 output_dir，则改为 <output_dir>/work/<run_id>/。
         self.project_dir = Path(project_dir).resolve() if project_dir else self.dataset_dir
         self.folder_name = folder_name or self.project_dir.name
         self.run_id = run_id or generate_run_id(self.folder_name)
 
-        # run_dir: <project_dir>/work/<run_id>/
-        work_root = Path(work_root) if work_root else self.project_dir / "work"
-        self.run_dir = (work_root / self.run_id).resolve()
+        self.output_dir: Optional[Path] = None
+        if output_dir is not None:
+            out = Path(output_dir)
+            try:
+                out = out.resolve()
+            except OSError:
+                pass
+            self.output_dir = out
+
+        # run_dir 优先级：显式 work_root > output_dir/work > project_dir/work
+        if work_root is not None:
+            resolved_work_root = Path(work_root)
+        elif self.output_dir is not None:
+            resolved_work_root = self.output_dir / "work"
+        else:
+            resolved_work_root = self.project_dir / "work"
+        try:
+            self.work_root = resolved_work_root.resolve()
+        except OSError:
+            self.work_root = resolved_work_root
+
+        self.run_dir = (self.work_root / self.run_id).resolve()
         self.run_dir.mkdir(parents=True, exist_ok=True)
 
         self.config_path = self.run_dir / "config.json"
@@ -211,6 +255,9 @@ class RunContext:
         info["run_id"] = self.run_id
         info["run_dir"] = str(self.run_dir)
         info["dataset_dir"] = str(self.dataset_dir)
+        info["work_root"] = str(self.work_root)
+        if self.output_dir is not None:
+            info["output_dir"] = str(self.output_dir)
         if extra:
             info.update(extra)
         return self._write_json(self.runtime_info_path, info)
@@ -257,9 +304,12 @@ class RunContext:
 
     def as_config_fragment(self) -> Dict[str, Any]:
         """返回需要写入 project 配置的字段。"""
-        return {
+        frag: Dict[str, Any] = {
             "run_id": self.run_id,
             "run_dir": str(self.run_dir),
             "work_dir": str(self.run_dir),
             "original_dataset_dir": str(self.dataset_dir),
         }
+        if self.output_dir is not None:
+            frag["output_dir"] = str(self.output_dir)
+        return frag

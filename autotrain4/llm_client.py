@@ -108,7 +108,9 @@ class LLMClient:
             "    {\n"
             '      "task_type": "分类/目标检测/OCR/实例分割/语义分割/旋转框检测/DETR 之一",\n'
             '      "categories": ["类别1", "类别2"],\n'
-            '      "dataset_hint": "用户提到的数据集文件夹名，没有则为空字符串",\n'
+            '      "dataset_hint": "用户提到的数据集文件夹名或路径片段，没有则为空字符串",\n'
+            '      "dataset_path": "用户给出的训练集完整路径（如 Z:\\\\项目\\\\2-训练集实例分割），没有则为空字符串",\n'
+            '      "output_dir": "用户指定的模型输出目录完整路径，没有则为空字符串",\n'
             '      "mode": "train",\n'
             '      "data_analysis": true,\n'
             '      "mentions_augmentation": false,\n'
@@ -134,7 +136,11 @@ class LLMClient:
             "只有当该任务的 mentions_augmentation 为 true 时才填写；否则必须返回空列表。\n"
             "9. baseline_model：如果用户明确给出 .dvp 路径就返回；只提到 baseline/基准/对比但无路径时返回空字符串，并把 wants_baseline 设为 true。\n"
             "10. 如果用户想测试或对比模型，mode 返回 test；想训练则返回 train。\n"
-            "11. 只返回 JSON，不要附加说明。"
+            "11. dataset_path：用户若给出训练集/数据目录的完整路径（盘符路径、UNC 等），必须原样填入，"
+            "不要改成本地示例目录名；不要把模型输出目录填进 dataset_path。\n"
+            "12. output_dir：用户若明确说模型输出到/保存到某个目录，填完整路径；否则空字符串。\n"
+            "13. dataset_hint：若只有文件夹名没有完整路径时填写；已有 dataset_path 时可填最后一级目录名。\n"
+            "14. 只返回 JSON，不要附加说明。"
         )
         content = self.chat([
             {"role": "system", "content": system_msg},
@@ -159,14 +165,16 @@ class LLMClient:
             "你是 DLCV 训练平台的数据集匹配助手。请根据用户意图，从候选数据集中选出最匹配的一个。\n"
             "返回 JSON 格式：\n"
             "{\n"
-            '  "folder": "选中的文件夹名称（必须来自候选列表）",\n'
+            '  "folder": "选中的文件夹名称（候选的 folder 字段）",\n'
+            '  "path": "选中项的完整 path 字段（多根扫描时强烈建议填写，用于消歧）",\n'
             '  "reasoning": "简要说明为什么选这个文件夹",\n'
             '  "confidence": 0.95\n'
             "}\n"
             "注意：\n"
-            "1. folder 必须是候选列表中真实存在的名称，不要编造。\n"
-            "2. 如果没有任何候选匹配，返回 null。\n"
-            "3. 只返回 JSON，不要附加说明。"
+            "1. folder / path 必须来自候选列表，不要编造。\n"
+            "2. 候选可能来自多个磁盘根目录；若存在同名 folder，必须返回对应的 path。\n"
+            "3. 如果没有任何候选匹配，返回 null。\n"
+            "4. 只返回 JSON，不要附加说明。"
         )
         user_msg = (
             f"用户原始输入：{prompt}\n"
