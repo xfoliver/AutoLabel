@@ -53,6 +53,42 @@ from suggestions import SmartSuggestionEngine as SuggestionEngine
 
 
 # ---------------------------------------------------------------------------
+# UI 等比例缩放
+# ---------------------------------------------------------------------------
+class UIScale:
+    """以设计稿分辨率换算缩放系数，驱动字体 / 间距 / 固定尺寸同步缩放。"""
+
+    REF_W = 1280
+    REF_H = 820
+    MIN_FACTOR = 0.72
+    MAX_FACTOR = 1.55
+    # 小于该差值不重绘，避免 resize 抖动
+    EPSILON = 0.015
+
+    def __init__(self) -> None:
+        self.factor = 1.0
+
+    def update_from_size(self, width: int, height: int) -> bool:
+        if width <= 0 or height <= 0:
+            return False
+        raw = min(width / self.REF_W, height / self.REF_H)
+        factor = max(self.MIN_FACTOR, min(self.MAX_FACTOR, raw))
+        if abs(factor - self.factor) < self.EPSILON:
+            return False
+        self.factor = factor
+        return True
+
+    def px(self, value: float, minimum: int = 1) -> int:
+        return max(minimum, int(round(value * self.factor)))
+
+    def font(self, value: float, minimum: int = 8) -> int:
+        return max(minimum, int(round(value * self.factor)))
+
+    def qss_px(self, value: float, minimum: int = 0) -> str:
+        return f"{self.px(value, minimum)}px"
+
+
+# ---------------------------------------------------------------------------
 # 可点击的模板卡片
 # ---------------------------------------------------------------------------
 class ClickableFrame(QFrame):
@@ -486,17 +522,20 @@ class CollapsibleLogPanel(QWidget):
         self._all_lines: list[str] = []
         self._current_stage: Optional[Dict[str, Any]] = None
         self._selected_stage: Optional[int] = None
+        self._ui_scale: Optional[UIScale] = None
 
         root = QHBoxLayout(self)
         root.setSpacing(0)
         root.setContentsMargins(0, 0, 0, 0)
+        self._root_layout = root
 
         rail = QFrame()
         rail.setObjectName("logStageRail")
-        rail.setFixedWidth(174)
+        self._rail = rail
         rail_layout = QVBoxLayout(rail)
         rail_layout.setSpacing(7)
         rail_layout.setContentsMargins(12, 14, 12, 14)
+        self._rail_layout = rail_layout
 
         rail_title = QLabel("EXECUTION FLOW")
         rail_title.setObjectName("logRailTitle")
@@ -537,11 +576,13 @@ class CollapsibleLogPanel(QWidget):
         toolbar_layout = QHBoxLayout(toolbar)
         toolbar_layout.setContentsMargins(14, 9, 14, 9)
         toolbar_layout.setSpacing(8)
+        self._toolbar_layout = toolbar_layout
+        self._console_dots: list[QLabel] = []
 
         for color_name in ("red", "amber", "green"):
             dot = QLabel()
             dot.setObjectName(f"consoleDot{color_name.title()}")
-            dot.setFixedSize(8, 8)
+            self._console_dots.append(dot)
             toolbar_layout.addWidget(dot)
 
         console_title = QLabel("AUTOTRAIN / LIVE CONSOLE")
@@ -565,7 +606,31 @@ class CollapsibleLogPanel(QWidget):
         console_layout.addWidget(self._console, 1)
         root.addWidget(console, 1)
 
-        self.setMinimumHeight(300)
+        self.apply_ui_scale(UIScale())
+
+    def apply_ui_scale(self, scale: UIScale) -> None:
+        """按当前缩放因子刷新控制台内部固定尺寸。"""
+        self._ui_scale = scale
+        self._rail.setFixedWidth(scale.px(174, 120))
+        self._rail_layout.setSpacing(scale.px(7, 4))
+        self._rail_layout.setContentsMargins(
+            scale.px(12, 8),
+            scale.px(14, 8),
+            scale.px(12, 8),
+            scale.px(14, 8),
+        )
+        self._stage_layout.setSpacing(scale.px(5, 3))
+        self._toolbar_layout.setContentsMargins(
+            scale.px(14, 8),
+            scale.px(9, 6),
+            scale.px(14, 8),
+            scale.px(9, 6),
+        )
+        self._toolbar_layout.setSpacing(scale.px(8, 4))
+        for dot in self._console_dots:
+            size = scale.px(8, 6)
+            dot.setFixedSize(size, size)
+        self.setMinimumHeight(scale.px(300, 180))
 
     def clear(self) -> None:
         while self._stage_layout.count():
@@ -994,9 +1059,12 @@ class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("AutoTrain 4.0")
-        self.setMinimumSize(900, 700)
+        self.setMinimumSize(780, 600)
+        self.resize(UIScale.REF_W, UIScale.REF_H)
         self.worker: Optional[TrainWorker] = None
         self.post_worker: Optional[PostTrainWorker] = None
+        self._ui_scale = UIScale()
+        self._last_compact = False
 
         from autotrain4.llm_client import LLMClient
 
@@ -1007,6 +1075,9 @@ class MainWindow(QMainWindow):
         self._suggestion_debounce = QTimer(self)
         self._suggestion_debounce.setSingleShot(True)
         self._suggestion_debounce.timeout.connect(self._do_update_suggestions)
+        self._scale_debounce = QTimer(self)
+        self._scale_debounce.setSingleShot(True)
+        self._scale_debounce.timeout.connect(self._apply_responsive_scale)
 
         # 空输入时点击「刷新建议」会轮换这几组默认模板
         self._default_suggestion_sets = [
@@ -1026,7 +1097,130 @@ class MainWindow(QMainWindow):
         self._settings = self._load_settings()
 
         self._setup_ui()
+        self._apply_responsive_scale(force=True)
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        # 拖拽缩放时防抖，避免每像素重算样式
+        self._scale_debounce.start(40)
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        self._apply_responsive_scale(force=True)
+
+    def _apply_responsive_scale(self, force: bool = False) -> None:
+        """窗口尺寸变化时，等比例缩放字体、间距、固定控件尺寸。"""
+        changed = self._ui_scale.update_from_size(self.width(), self.height())
+        compact = self.width() < 1080
+        if not force and not changed and compact == self._last_compact:
+            return
+        self._last_compact = compact
+        self._apply_layout_metrics(compact)
         self._apply_styles()
+        if hasattr(self, "log_panel"):
+            self.log_panel.apply_ui_scale(self._ui_scale)
+        if hasattr(self, "chat_response_box"):
+            self._apply_chat_box_style()
+        # 模板卡片内部 spacing 也随缩放
+        self._refresh_template_item_metrics()
+
+    def _apply_layout_metrics(self, compact: bool) -> None:
+        s = self._ui_scale
+        gap = s.px(16 if compact else 22, 10)
+        side = s.px(200 if compact else 250, 160)
+
+        if hasattr(self, "_sidebar"):
+            self._sidebar.setFixedWidth(side)
+            self._sidebar_layout.setSpacing(s.px(18 if compact else 24, 10))
+            self._sidebar_layout.setContentsMargins(
+                s.px(14 if compact else 18, 8),
+                s.px(18 if compact else 24, 10),
+                s.px(14 if compact else 18, 8),
+                s.px(18 if compact else 24, 10),
+            )
+        if hasattr(self, "_brand_mark"):
+            mark = s.px(34 if compact else 38, 28)
+            self._brand_mark.setFixedSize(mark, mark)
+        if hasattr(self, "_nav_layout"):
+            self._nav_layout.setSpacing(s.px(6 if compact else 8, 4))
+        if hasattr(self, "_status_layout"):
+            self._status_layout.setSpacing(s.px(6 if compact else 8, 4))
+
+        if hasattr(self, "_main_vlayout"):
+            self._main_vlayout.setSpacing(gap)
+            self._main_vlayout.setContentsMargins(
+                s.px(18 if compact else 28, 12),
+                s.px(16 if compact else 24, 10),
+                s.px(20 if compact else 34, 12),
+                s.px(20 if compact else 32, 12),
+            )
+        if hasattr(self, "_content_layout"):
+            self._content_layout.setSpacing(gap)
+        if hasattr(self, "_topbar_layout"):
+            self._topbar_layout.setSpacing(s.px(10 if compact else 12, 6))
+        if hasattr(self, "_left_col_layout"):
+            self._left_col_layout.setSpacing(gap)
+        if hasattr(self, "_right_col_layout"):
+            self._right_col_layout.setSpacing(gap)
+        if hasattr(self, "_prompt_card_layout"):
+            self._prompt_card_layout.setSpacing(s.px(12 if compact else 16, 8))
+        if hasattr(self, "prompt_input"):
+            self.prompt_input.setMaximumHeight(s.px(100 if compact else 125, 72))
+            self.prompt_input.setMinimumHeight(s.px(72 if compact else 90, 56))
+        if hasattr(self, "suggestions_container"):
+            self.suggestions_container.setMinimumHeight(s.px(30 if compact else 36, 24))
+        if hasattr(self, "suggestions_layout"):
+            self.suggestions_layout.setSpacing(s.px(8 if compact else 10, 4))
+        if hasattr(self, "_sugg_header_layout"):
+            self._sugg_header_layout.setSpacing(s.px(6 if compact else 8, 4))
+        if hasattr(self, "_btn_row_layout"):
+            self._btn_row_layout.setSpacing(s.px(8 if compact else 12, 6))
+        if hasattr(self, "_metrics_layout"):
+            self._metrics_layout.setSpacing(s.px(8 if compact else 12, 6))
+        for layout in getattr(self, "_metric_item_layouts", []):
+            layout.setSpacing(s.px(4 if compact else 6, 2))
+        if hasattr(self, "_tpl_grid_layout") and self._tpl_grid_layout is not None:
+            self._tpl_grid_layout.setSpacing(s.px(8 if compact else 10, 4))
+        if hasattr(self, "chat_response_box"):
+            self.chat_response_box.setMinimumHeight(s.px(120 if compact else 150, 90))
+
+    def _refresh_template_item_metrics(self) -> None:
+        if not hasattr(self, "quick_templates_grid"):
+            return
+        s = self._ui_scale
+        layout = self.quick_templates_grid.layout()
+        if layout is None:
+            return
+        for i in range(layout.count()):
+            item = layout.itemAt(i)
+            widget = item.widget() if item is not None else None
+            if widget is None:
+                continue
+            inner = widget.layout()
+            if inner is not None:
+                inner.setSpacing(s.px(4, 2))
+                inner.setContentsMargins(
+                    s.px(8, 4),
+                    s.px(8, 4),
+                    s.px(8, 4),
+                    s.px(8, 4),
+                )
+
+    def _apply_chat_box_style(self) -> None:
+        s = self._ui_scale
+        self.chat_response_box.setStyleSheet(
+            f"""
+            QPlainTextEdit {{
+                background: #f7f5ff;
+                border: 1px solid #e6e1ff;
+                border-radius: {s.qss_px(14, 8)};
+                padding: {s.qss_px(14, 8)};
+                font-size: {s.font(15)}px;
+                color: #4c1d95;
+                line-height: 1.7;
+            }}
+            """
+        )
 
     def _setup_ui(self) -> None:
         central = QWidget()
@@ -1035,6 +1229,7 @@ class MainWindow(QMainWindow):
         root = QHBoxLayout(central)
         root.setSpacing(0)
         root.setContentsMargins(0, 0, 0, 0)
+        self._root_layout = root
 
         # ---------------- 左侧边栏 ----------------
         sidebar = self._build_sidebar()
@@ -1046,6 +1241,7 @@ class MainWindow(QMainWindow):
         main_vlayout = QVBoxLayout(main_area)
         main_vlayout.setSpacing(22)
         main_vlayout.setContentsMargins(28, 24, 34, 32)
+        self._main_vlayout = main_vlayout
 
         # 顶栏
         topbar = self._build_topbar()
@@ -1057,6 +1253,7 @@ class MainWindow(QMainWindow):
         content_layout.setSpacing(22)
         content_layout.setContentsMargins(0, 0, 0, 0)
         content_layout.setAlignment(Qt.AlignTop)
+        self._content_layout = content_layout
 
         left_col = self._build_left_column()
         content_layout.addWidget(left_col, 2)
@@ -1073,9 +1270,11 @@ class MainWindow(QMainWindow):
     def _build_sidebar(self) -> QWidget:
         sidebar = QWidget()
         sidebar.setObjectName("sidebar")
+        self._sidebar = sidebar
         layout = QVBoxLayout(sidebar)
         layout.setSpacing(24)
         layout.setContentsMargins(18, 24, 18, 24)
+        self._sidebar_layout = layout
 
         # 品牌
         brand = QHBoxLayout()
@@ -1083,6 +1282,7 @@ class MainWindow(QMainWindow):
         brand_mark.setObjectName("brandMark")
         brand_mark.setAlignment(Qt.AlignCenter)
         brand_mark.setFixedSize(38, 38)
+        self._brand_mark = brand_mark
         brand.addWidget(brand_mark)
 
         brand_text = QVBoxLayout()
@@ -1099,6 +1299,7 @@ class MainWindow(QMainWindow):
         # 导航
         nav = QVBoxLayout()
         nav.setSpacing(8)
+        self._nav_layout = nav
         nav_items = [
             ("⌂", "工作台", True, None),
             ("⚙", "系统设置", False, self._open_settings),
@@ -1119,6 +1320,7 @@ class MainWindow(QMainWindow):
         status_card.setObjectName("sideCard")
         status_layout = QVBoxLayout(status_card)
         status_layout.setSpacing(8)
+        self._status_layout = status_layout
         status_title = QLabel("平台状态")
         status_title.setObjectName("sideCardTitle")
         status_desc = QLabel("Backend 9887 与 Frontend 8842 均已连接。")
@@ -1138,15 +1340,17 @@ class MainWindow(QMainWindow):
         topbar_layout = QHBoxLayout(topbar)
         topbar_layout.setSpacing(12)
         topbar_layout.setContentsMargins(0, 0, 0, 0)
+        self._topbar_layout = topbar_layout
 
         title_col = QVBoxLayout()
         title = QLabel("自动化训练工作台")
         title.setObjectName("pageTitle")
         subtitle = QLabel("用自然语言创建、监控并管理你的视觉训练任务。")
         subtitle.setObjectName("pageSubtitle")
+        subtitle.setWordWrap(True)
         title_col.addWidget(title)
         title_col.addWidget(subtitle)
-        topbar_layout.addLayout(title_col)
+        topbar_layout.addLayout(title_col, 1)
 
         topbar_layout.addStretch()
 
@@ -1164,12 +1368,14 @@ class MainWindow(QMainWindow):
         col_layout.setSpacing(22)
         col_layout.setContentsMargins(0, 0, 0, 0)
         col_layout.setAlignment(Qt.AlignTop)
+        self._left_col_layout = col_layout
 
         # 训练需求卡片
         prompt_card = QFrame()
         prompt_card.setObjectName("card")
         card_layout = QVBoxLayout(prompt_card)
         card_layout.setSpacing(16)
+        self._prompt_card_layout = card_layout
 
         header = QHBoxLayout()
         header_title = QLabel("训练需求")
@@ -1196,6 +1402,7 @@ class MainWindow(QMainWindow):
 
         sugg_header = QHBoxLayout()
         sugg_header.setSpacing(8)
+        self._sugg_header_layout = sugg_header
         sugg_title = QLabel("猜你想说")
         sugg_title.setObjectName("sectionTitle")
         sugg_header.addWidget(sugg_title)
@@ -1218,6 +1425,7 @@ class MainWindow(QMainWindow):
 
         btn_row = QHBoxLayout()
         btn_row.setSpacing(12)
+        self._btn_row_layout = btn_row
         self.start_btn = QPushButton("▶ 开始训练")
         self.start_btn.setObjectName("runBtn")
         self.start_btn.setCursor(Qt.PointingHandCursor)
@@ -1239,6 +1447,8 @@ class MainWindow(QMainWindow):
         # 指标概览
         metrics = QHBoxLayout()
         metrics.setSpacing(12)
+        self._metrics_layout = metrics
+        self._metric_item_layouts: list = []
         self.metric_labels = {}
         for key, label in [
             ("task_type", "任务类型"),
@@ -1249,11 +1459,13 @@ class MainWindow(QMainWindow):
             m.setObjectName("metric")
             mv = QVBoxLayout(m)
             mv.setSpacing(6)
+            self._metric_item_layouts.append(mv)
             ms = QLabel(label)
             ms.setObjectName("metricLabel")
             mv.addWidget(ms)
             mv_val = QLabel("-")
             mv_val.setObjectName("metricValue")
+            mv_val.setWordWrap(True)
             self.metric_labels[key] = mv_val
             mv.addWidget(mv_val)
             metrics.addWidget(m)
@@ -1289,6 +1501,7 @@ class MainWindow(QMainWindow):
         col_layout.setSpacing(22)
         col_layout.setContentsMargins(0, 0, 0, 0)
         col_layout.setAlignment(Qt.AlignTop)
+        self._right_col_layout = col_layout
 
         # 快捷模板
         tpl_card = QFrame()
@@ -1310,6 +1523,7 @@ class MainWindow(QMainWindow):
         tpl_layout.addLayout(tpl_header)
 
         self.quick_templates_grid = QWidget()
+        self._tpl_grid_layout = None
         self._render_quick_templates()
         tpl_layout.addWidget(self.quick_templates_grid)
         col_layout.addWidget(tpl_card)
@@ -1354,17 +1568,7 @@ class MainWindow(QMainWindow):
         self.chat_response_box.setReadOnly(True)
         self.chat_response_box.setLineWrapMode(QPlainTextEdit.WidgetWidth)
         self.chat_response_box.setPlaceholderText("暂无回复，输入闲聊或问题后将在此显示助手回答。")
-        self.chat_response_box.setStyleSheet("""
-            QPlainTextEdit {
-                background: #f7f5ff;
-                border: 1px solid #e6e1ff;
-                border-radius: 14px;
-                padding: 14px;
-                font-size: 15px;
-                color: #4c1d95;
-                line-height: 1.7;
-            }
-        """)
+        self._apply_chat_box_style()
         chat_layout.addWidget(self.chat_response_box)
         col_layout.addWidget(self.chat_response_card)
 
@@ -1385,16 +1589,21 @@ class MainWindow(QMainWindow):
             grid_layout = QGridLayout(self.quick_templates_grid)
             grid_layout.setSpacing(10)
             grid_layout.setContentsMargins(0, 0, 0, 0)
+        self._tpl_grid_layout = grid_layout
+        s = getattr(self, "_ui_scale", UIScale())
 
         for i, (title, desc, prompt) in enumerate(self._quick_templates[: self.MAX_QUICK_TEMPLATES]):
             item = ClickableFrame(i)
             item.setObjectName("quickItem")
             iv = QVBoxLayout(item)
-            iv.setSpacing(4)
+            iv.setSpacing(s.px(4, 2))
+            iv.setContentsMargins(s.px(8, 4), s.px(8, 4), s.px(8, 4), s.px(8, 4))
             it = QLabel(title)
             it.setObjectName("quickTitle")
+            it.setWordWrap(True)
             idesc = QLabel(desc)
             idesc.setObjectName("quickDesc")
+            idesc.setWordWrap(True)
             iv.addWidget(it)
             iv.addWidget(idesc)
             item.clicked.connect(self._apply_quick_template)
@@ -1701,412 +1910,415 @@ class MainWindow(QMainWindow):
         dialog.exec_()
 
     def _apply_styles(self) -> None:
-        """应用 Web 前端风格的白色卡片 + 蓝紫渐变主题。"""
+        """应用 Web 前端风格主题；字号/圆角/内边距随窗口等比例缩放。"""
+        s = getattr(self, "_ui_scale", None) or UIScale()
+        f = s.font
+        p = s.qss_px
+
         self.setStyleSheet(
-            """
-            QMainWindow {
+            f"""
+            QMainWindow {{
                 background: qlineargradient(
                     x1:0, y1:0, x2:1, y2:1,
                     stop:0 rgba(108,92,231,0.16),
                     stop:0.28 transparent,
                     stop:1 #f4f6fb
                 );
-            }
-            QWidget#mainArea {
+            }}
+            QWidget#mainArea {{
                 background: transparent;
-            }
+            }}
 
-            /* 侧边栏 */
-            QWidget#sidebar {
+            /* 侧边栏宽度由 setFixedWidth 控制，这里只保留视觉样式 */
+            QWidget#sidebar {{
                 background: rgba(255, 255, 255, 0.86);
                 border-right: 1px solid rgba(232, 235, 242, 0.9);
-                max-width: 250px;
-                min-width: 250px;
-            }
-            QLabel#brandMark {
+            }}
+            QLabel#brandMark {{
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
                     stop:0 #6c5ce7, stop:1 #a879ff);
                 color: white;
                 font-weight: 800;
-                font-size: 15px;
-                border-radius: 12px;
-            }
-            QLabel#brandTitle {
-                font-size: 17px;
+                font-size: {f(15)}px;
+                border-radius: {p(12, 8)};
+            }}
+            QLabel#brandTitle {{
+                font-size: {f(17)}px;
                 font-weight: bold;
                 color: #192033;
-            }
-            QLabel#brandSub {
-                font-size: 12px;
+            }}
+            QLabel#brandSub {{
+                font-size: {f(12)}px;
                 color: #7b8499;
-                margin-top: 2px;
-            }
-            QPushButton#navBtn, QPushButton#navBtnActive {
+                margin-top: {p(2, 0)};
+            }}
+            QPushButton#navBtn, QPushButton#navBtnActive {{
                 border: none;
                 background: transparent;
                 color: #5e6678;
                 text-align: left;
-                padding: 12px 14px;
-                border-radius: 12px;
-                font-size: 14px;
-            }
-            QPushButton#navBtn:hover {
+                padding: {p(12, 6)} {p(14, 8)};
+                border-radius: {p(12, 8)};
+                font-size: {f(14)}px;
+            }}
+            QPushButton#navBtn:hover {{
                 background: rgba(108, 92, 231, 0.06);
-            }
-            QPushButton#navBtnActive {
+            }}
+            QPushButton#navBtnActive {{
                 background: #f0edff;
                 color: #6c5ce7;
                 font-weight: bold;
-            }
-            QFrame#sideCard {
+            }}
+            QFrame#sideCard {{
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
                     stop:0 #f0edff, stop:1 #faf9ff);
                 border: 1px solid #e5defe;
-                border-radius: 16px;
-                padding: 6px;
-            }
-            QLabel#sideCardTitle {
-                font-size: 14px;
+                border-radius: {p(16, 10)};
+                padding: {p(6, 4)};
+            }}
+            QLabel#sideCardTitle {{
+                font-size: {f(14)}px;
                 font-weight: bold;
                 color: #192033;
-            }
-            QLabel#sideCardDesc {
-                font-size: 12px;
+            }}
+            QLabel#sideCardDesc {{
+                font-size: {f(12)}px;
                 color: #7b8499;
                 line-height: 1.5;
-            }
-            QLabel#sideCardBadge {
-                font-size: 12px;
+            }}
+            QLabel#sideCardBadge {{
+                font-size: {f(12)}px;
                 font-weight: bold;
                 color: #1fa971;
                 background: #e9f8f2;
                 border-radius: 999px;
-                padding: 5px 10px;
-            }
+                padding: {p(5, 3)} {p(10, 6)};
+            }}
 
             /* 顶栏 */
-            QLabel#pageTitle {
-                font-size: 28px;
+            QLabel#pageTitle {{
+                font-size: {f(28)}px;
                 font-weight: bold;
                 color: #ffffff;
-            }
-            QLabel#pageSubtitle {
-                font-size: 14px;
+            }}
+            QLabel#pageSubtitle {{
+                font-size: {f(14)}px;
                 color: #7b8499;
-                margin-top: 4px;
-            }
-            QPushButton#primaryBtn {
+                margin-top: {p(4, 2)};
+            }}
+            QPushButton#primaryBtn {{
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
                     stop:0 #6c5ce7, stop:1 #8b7cf6);
                 color: white;
                 font-weight: bold;
                 border: none;
-                border-radius: 12px;
-                padding: 10px 16px;
-                font-size: 14px;
-            }
-            QPushButton#ghostBtn, QPushButton#tinyGhostBtn {
+                border-radius: {p(12, 8)};
+                padding: {p(10, 6)} {p(16, 10)};
+                font-size: {f(14)}px;
+            }}
+            QPushButton#ghostBtn, QPushButton#tinyGhostBtn {{
                 background: #eef0f7;
                 color: #4d5566;
                 border: none;
-                border-radius: 12px;
-                padding: 10px 14px;
-                font-size: 13px;
-            }
-            QPushButton#tinyGhostBtn {
-                padding: 6px 10px;
-                font-size: 12px;
-            }
+                border-radius: {p(12, 8)};
+                padding: {p(10, 6)} {p(14, 8)};
+                font-size: {f(13)}px;
+            }}
+            QPushButton#tinyGhostBtn {{
+                padding: {p(6, 4)} {p(10, 6)};
+                font-size: {f(12)}px;
+            }}
 
             /* 卡片通用 */
-            QFrame#card {
+            QFrame#card {{
                 background: rgba(255, 255, 255, 0.94);
                 border: 1px solid rgba(232, 235, 242, 0.96);
-                border-radius: 20px;
-                padding: 8px;
-            }
-            QLabel#cardTitle {
-                font-size: 16px;
+                border-radius: {p(20, 12)};
+                padding: {p(8, 4)};
+            }}
+            QLabel#cardTitle {{
+                font-size: {f(16)}px;
                 font-weight: bold;
                 color: #192033;
-            }
-            QLabel#tag {
-                font-size: 12px;
+            }}
+            QLabel#tag {{
+                font-size: {f(12)}px;
                 font-weight: bold;
                 color: #6c5ce7;
                 background: #f2f0ff;
                 border-radius: 999px;
-                padding: 5px 10px;
-            }
-            QLabel#sectionTitle {
-                font-size: 14px;
+                padding: {p(5, 3)} {p(10, 6)};
+            }}
+            QLabel#sectionTitle {{
+                font-size: {f(14)}px;
                 font-weight: bold;
                 color: #192033;
-            }
+            }}
 
             /* 输入框 */
-            QPlainTextEdit#promptInput {
+            QPlainTextEdit#promptInput {{
                 background-color: #fbfcff;
                 border: 1px solid #e5e8f0;
-                border-radius: 17px;
-                padding: 14px;
-                font-size: 16px;
-            }
-            QPlainTextEdit#promptInput:focus {
+                border-radius: {p(17, 10)};
+                padding: {p(14, 8)};
+                font-size: {f(16)}px;
+            }}
+            QPlainTextEdit#promptInput:focus {{
                 border: 1px solid #b8afff;
-            }
+            }}
 
-            /* 建议气泡 - 用 QPushButton 实现，避免 QLabel 颜色冲突 */
-            QPushButton#suggestionChip {
+            /* 建议气泡 */
+            QPushButton#suggestionChip {{
                 background-color: #f7f5ff;
                 color: #5347b4;
                 border: 1px solid #e6e1ff;
                 border-radius: 999px;
-                padding: 7px 14px;
-                font-size: 13px;
-            }
-            QPushButton#suggestionChip:hover {
+                padding: {p(7, 4)} {p(14, 8)};
+                font-size: {f(13)}px;
+            }}
+            QPushButton#suggestionChip:hover {{
                 background-color: #efebff;
                 border: 1px solid #d6cdff;
-            }
-            QWidget#suggestionsContainer {
+            }}
+            QWidget#suggestionsContainer {{
                 background: transparent;
-            }
+            }}
 
             /* 按钮 */
-            QPushButton#runBtn {
+            QPushButton#runBtn {{
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
                     stop:0 #6c5ce7, stop:1 #7b66ef);
                 color: white;
                 font-weight: bold;
                 border: none;
-                border-radius: 14px;
-                padding: 13px;
-                font-size: 15px;
-            }
-            QPushButton#runBtn:disabled {
+                border-radius: {p(14, 8)};
+                padding: {p(13, 8)};
+                font-size: {f(15)}px;
+            }}
+            QPushButton#runBtn:disabled {{
                 opacity: 0.65;
-            }
-            QPushButton#secondaryBtn {
+            }}
+            QPushButton#secondaryBtn {{
                 background: #eef0f6;
                 color: #4f586b;
                 border: none;
-                border-radius: 14px;
-                padding: 13px;
-                font-size: 14px;
-            }
-            QPushButton#softBtn {
+                border-radius: {p(14, 8)};
+                padding: {p(13, 8)};
+                font-size: {f(14)}px;
+            }}
+            QPushButton#softBtn {{
                 background: #f4efff;
                 color: #6555c7;
                 border: none;
-                border-radius: 14px;
-                padding: 13px;
-                font-size: 14px;
-            }
+                border-radius: {p(14, 8)};
+                padding: {p(13, 8)};
+                font-size: {f(14)}px;
+            }}
 
             /* 指标 */
-            QFrame#metric {
+            QFrame#metric {{
                 background: #f8f9fc;
                 border: 1px solid #e8ebf2;
-                border-radius: 14px;
-                padding: 8px;
-            }
-            QLabel#metricLabel {
-                font-size: 12px;
+                border-radius: {p(14, 8)};
+                padding: {p(8, 4)};
+            }}
+            QLabel#metricLabel {{
+                font-size: {f(12)}px;
                 color: #7b8499;
-            }
-            QLabel#metricValue {
-                font-size: 20px;
+            }}
+            QLabel#metricValue {{
+                font-size: {f(20)}px;
                 font-weight: bold;
                 color: #192033;
-            }
+            }}
 
             /* 日志 */
             QLabel#statusBadge,
-            QLabel#statusBadgeWaiting {
-                font-size: 12px;
+            QLabel#statusBadgeWaiting {{
+                font-size: {f(12)}px;
                 font-weight: bold;
                 color: #6b7280;
                 background: #e5e7eb;
                 border-radius: 999px;
-                padding: 5px 10px;
-            }
-            QLabel#statusBadgeRunning {
-                font-size: 12px;
+                padding: {p(5, 3)} {p(10, 6)};
+            }}
+            QLabel#statusBadgeRunning {{
+                font-size: {f(12)}px;
                 font-weight: bold;
                 color: #6c5ce7;
                 background: #eeeaff;
                 border-radius: 999px;
-                padding: 5px 10px;
-            }
-            QLabel#statusBadgeSuccess {
-                font-size: 12px;
+                padding: {p(5, 3)} {p(10, 6)};
+            }}
+            QLabel#statusBadgeSuccess {{
+                font-size: {f(12)}px;
                 font-weight: bold;
                 color: #1fa971;
                 background: #e9f8f2;
                 border-radius: 999px;
-                padding: 5px 10px;
-            }
-            QLabel#statusBadgeError {
-                font-size: 12px;
+                padding: {p(5, 3)} {p(10, 6)};
+            }}
+            QLabel#statusBadgeError {{
+                font-size: {f(12)}px;
                 font-weight: bold;
                 color: #db5a65;
                 background: #fdecee;
                 border-radius: 999px;
-                padding: 5px 10px;
-            }
-            QWidget#logPanel {
+                padding: {p(5, 3)} {p(10, 6)};
+            }}
+            QWidget#logPanel {{
                 background: transparent;
                 border: 1px solid #dde2ec;
-                border-radius: 16px;
-            }
-            QFrame#logStageRail {
+                border-radius: {p(16, 10)};
+            }}
+            QFrame#logStageRail {{
                 background: #f7f8fc;
                 border: none;
-                border-top-left-radius: 15px;
-                border-bottom-left-radius: 15px;
-            }
-            QLabel#logRailTitle {
+                border-top-left-radius: {p(15, 10)};
+                border-bottom-left-radius: {p(15, 10)};
+            }}
+            QLabel#logRailTitle {{
                 color: #929bad;
-                font-size: 10px;
+                font-size: {f(10)}px;
                 font-weight: 800;
                 letter-spacing: 1px;
-                padding: 2px 5px 6px 5px;
-            }
+                padding: {p(2, 1)} {p(5, 3)} {p(6, 3)} {p(5, 3)};
+            }}
             QWidget#logStageHost,
             QScrollArea#logStageScroll,
-            QScrollArea#logStageScroll > QWidget > QWidget {
+            QScrollArea#logStageScroll > QWidget > QWidget {{
                 background: transparent;
                 border: none;
-            }
+            }}
             QPushButton#logStageNav,
-            QPushButton#logStageNavActive {
+            QPushButton#logStageNavActive {{
                 background: transparent;
                 color: #697386;
-                font-size: 11px;
+                font-size: {f(11)}px;
                 font-weight: 600;
                 border: none;
-                border-radius: 9px;
-                padding: 9px 8px;
+                border-radius: {p(9, 6)};
+                padding: {p(9, 5)} {p(8, 4)};
                 text-align: left;
-            }
-            QPushButton#logStageNav:hover {
+            }}
+            QPushButton#logStageNav:hover {{
                 background: #eff1f7;
                 color: #414b5f;
-            }
-            QPushButton#logStageNavActive {
+            }}
+            QPushButton#logStageNavActive {{
                 background: #ebe8ff;
                 color: #6655d9;
                 font-weight: 800;
-            }
-            QFrame#logConsole {
+            }}
+            QFrame#logConsole {{
                 background: #0d1423;
                 border: none;
-                border-top-right-radius: 15px;
-                border-bottom-right-radius: 15px;
-            }
-            QFrame#logConsoleToolbar {
+                border-top-right-radius: {p(15, 10)};
+                border-bottom-right-radius: {p(15, 10)};
+            }}
+            QFrame#logConsoleToolbar {{
                 background: #151e2f;
                 border: none;
                 border-bottom: 1px solid #222d42;
-                border-top-right-radius: 15px;
-            }
+                border-top-right-radius: {p(15, 10)};
+            }}
             QLabel#consoleDotRed,
             QLabel#consoleDotAmber,
-            QLabel#consoleDotGreen {
-                border-radius: 4px;
+            QLabel#consoleDotGreen {{
+                border-radius: {p(4, 2)};
                 background: #ff6b72;
-            }
-            QLabel#consoleDotAmber {
+            }}
+            QLabel#consoleDotAmber {{
                 background: #f2bd55;
-            }
-            QLabel#consoleDotGreen {
+            }}
+            QLabel#consoleDotGreen {{
                 background: #38c98d;
-            }
-            QLabel#logConsoleTitle {
+            }}
+            QLabel#logConsoleTitle {{
                 color: #8390a5;
-                font-size: 10px;
+                font-size: {f(10)}px;
                 font-weight: 700;
                 letter-spacing: 1px;
-            }
-            QLabel#logConsoleLive {
+            }}
+            QLabel#logConsoleLive {{
                 color: #4dd4a1;
                 background: #122d2a;
                 border: 1px solid #1e473e;
-                border-radius: 8px;
-                padding: 3px 7px;
-                font-size: 9px;
+                border-radius: {p(8, 4)};
+                padding: {p(3, 2)} {p(7, 4)};
+                font-size: {f(9)}px;
                 font-weight: 800;
-            }
-            QPlainTextEdit#logConsoleOutput {
+            }}
+            QPlainTextEdit#logConsoleOutput {{
                 background: #0d1423;
                 border: none;
-                border-bottom-right-radius: 15px;
-                padding: 14px 16px;
+                border-bottom-right-radius: {p(15, 10)};
+                padding: {p(14, 8)} {p(16, 10)};
                 font-family: "Consolas", "SFMono-Regular", monospace;
-                font-size: 12px;
+                font-size: {f(12)}px;
                 color: #c7d0df;
                 selection-background-color: #6655d9;
                 selection-color: #ffffff;
-            }
-            QPlainTextEdit#logConsoleOutput QScrollBar:vertical {
+            }}
+            QPlainTextEdit#logConsoleOutput QScrollBar:vertical {{
                 background: #0d1423;
-                width: 10px;
-                margin: 4px 2px 4px 0;
-            }
-            QPlainTextEdit#logConsoleOutput QScrollBar::handle:vertical {
+                width: {p(10, 6)};
+                margin: {p(4, 2)} {p(2, 1)} {p(4, 2)} 0;
+            }}
+            QPlainTextEdit#logConsoleOutput QScrollBar::handle:vertical {{
                 background: #344057;
-                border-radius: 4px;
-                min-height: 28px;
-            }
+                border-radius: {p(4, 2)};
+                min-height: {p(28, 16)};
+            }}
             QPlainTextEdit#logConsoleOutput QScrollBar::add-line:vertical,
-            QPlainTextEdit#logConsoleOutput QScrollBar::sub-line:vertical {
+            QPlainTextEdit#logConsoleOutput QScrollBar::sub-line:vertical {{
                 height: 0;
-            }
+            }}
 
             /* 快捷模板 */
-            QFrame#quickItem {
+            QFrame#quickItem {{
                 background: #fbfcff;
                 border: 1px solid #e8ebf2;
-                border-radius: 14px;
-                padding: 8px;
-            }
-            QLabel#quickTitle {
-                font-size: 13px;
+                border-radius: {p(14, 8)};
+                padding: {p(8, 4)};
+            }}
+            QLabel#quickTitle {{
+                font-size: {f(13)}px;
                 font-weight: bold;
                 color: #192033;
-            }
-            QLabel#quickDesc {
-                font-size: 12px;
+            }}
+            QLabel#quickDesc {{
+                font-size: {f(12)}px;
                 color: #7b8499;
-                margin-top: 4px;
-            }
+                margin-top: {p(4, 2)};
+            }}
 
             /* 关闭浏览器 */
-            QPushButton#closeBrowserBtn {
+            QPushButton#closeBrowserBtn {{
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
                     stop:0 #6c5ce7, stop:1 #8b7cf6);
                 color: white;
                 font-weight: bold;
                 border: none;
-                border-radius: 12px;
-                padding: 12px;
-                font-size: 14px;
-            }
-            QPushButton#closeBrowserBtn:disabled {
+                border-radius: {p(12, 8)};
+                padding: {p(12, 8)};
+                font-size: {f(14)}px;
+            }}
+            QPushButton#closeBrowserBtn:disabled {{
                 background: #c4b5fd;
-            }
+            }}
             """
         )
 
         # 显式设置输入框调色板，确保 IME 预编辑拼音颜色正常
-        palette = self.prompt_input.palette()
-        palette.setColor(QPalette.Base, QColor("#fbfcff"))
-        palette.setColor(QPalette.Text, QColor("#1f2937"))
-        palette.setColor(QPalette.PlaceholderText, QColor("#9ca3af"))
-        palette.setColor(QPalette.Highlight, QColor("#c4b5fd"))
-        palette.setColor(QPalette.HighlightedText, QColor("#1f2937"))
-        self.prompt_input.setPalette(palette)
+        if hasattr(self, "prompt_input"):
+            palette = self.prompt_input.palette()
+            palette.setColor(QPalette.Base, QColor("#fbfcff"))
+            palette.setColor(QPalette.Text, QColor("#1f2937"))
+            palette.setColor(QPalette.PlaceholderText, QColor("#9ca3af"))
+            palette.setColor(QPalette.Highlight, QColor("#c4b5fd"))
+            palette.setColor(QPalette.HighlightedText, QColor("#1f2937"))
+            self.prompt_input.setPalette(palette)
 
     def _on_input_text_changed(self) -> None:
         """输入框内容变化时触发防抖。中文 IME 组字期间不刷新，英文输入实时刷新。"""
@@ -2546,7 +2758,8 @@ class MainWindow(QMainWindow):
 
 def main() -> None:
     app = QApplication(sys.argv)
-    font = QFont("Microsoft YaHei", 14)
+    # 应用级默认字体；各控件字号由 MainWindow 等比例缩放覆盖
+    font = QFont("Microsoft YaHei", 12)
     app.setFont(font)
 
     window = MainWindow()

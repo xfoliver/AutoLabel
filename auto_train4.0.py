@@ -35,14 +35,13 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from autotrain4.common import (
+    extract_filesystem_paths,
     find_baseline_model,
     find_latest_config,
     find_latest_dvp,
     normalize_scan_dirs,
     resolve_output_dir,
     resolve_path,
-    select_dataset_path_from_prompt,
-    select_output_path_from_prompt,
 )
 from autotrain4.config_builder import ConfigBuilder
 from autotrain4.evaluator import InferenceEvaluator
@@ -283,15 +282,12 @@ class AutoTrain4Orchestrator:
 
         优先级：
         1. CLI ``--output-dir``
-        2. 意图中的 ``output_dir``（LLM 或提示词解析）
-        3. 再从原始提示词正则提取一次
+        2. 意图中的 ``output_dir``（由 LLM 填写）
         """
         candidates = [
             getattr(self.args, "output_dir", None),
             getattr(intent, "output_dir", None),
         ]
-        if intent.raw_prompt:
-            candidates.append(select_output_path_from_prompt(intent.raw_prompt))
 
         for raw in candidates:
             path = resolve_output_dir(raw)
@@ -342,12 +338,17 @@ class AutoTrain4Orchestrator:
             except ValueError as exc:
                 raise AutoTrain4Error(str(exc)) from exc
 
-        # 双保险：若 NLU 未填 dataset_path，再从原始提示词抽一次
+        # 仅补充用户原句中的绝对路径字面量（不做语义关键词推断）
         if not getattr(intent, "dataset_path", "") and intent.raw_prompt:
-            guessed = select_dataset_path_from_prompt(intent.raw_prompt)
-            if guessed:
-                intent.dataset_path = guessed
-                logger.info("从提示词回填数据集路径: %s", guessed)
+            for guessed in extract_filesystem_paths(intent.raw_prompt):
+                try:
+                    p = Path(guessed)
+                    if p.exists() and p.is_dir():
+                        intent.dataset_path = guessed
+                        logger.info("从提示词路径字面量回填数据集路径: %s", guessed)
+                        break
+                except OSError:
+                    continue
 
         try:
             return resolver.resolve(

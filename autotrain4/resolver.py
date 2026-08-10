@@ -185,9 +185,11 @@ class DatasetResolver:
     ) -> Optional[DatasetMatch]:
         """锚点有界深搜；无线索或无候选时返回 None，由调用方 fallback 浅扫。"""
         clues = extract_location_clues(
-            prompt=intent.raw_prompt or "",
             dataset_hint=getattr(intent, "dataset_hint", "") or "",
             task_type=intent.task_type or "",
+            drives=getattr(intent, "location_drives", None) or None,
+            path_fragments=getattr(intent, "location_path_fragments", None) or None,
+            name_keywords=getattr(intent, "location_name_keywords", None) or None,
         )
         if not clues.has_searchable_signal():
             return None

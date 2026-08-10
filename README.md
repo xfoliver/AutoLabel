@@ -1,108 +1,133 @@
 # AutoTrain 4.0 — DLCV 视觉训练自动化工作台
 
-AutoTrain 4.0 使用自然语言驱动 DLCV AI Training Platform，负责解析训练需求、匹配数据集、生成配置、操作训练界面、监控任务，以及在训练后执行推理评估和 Baseline 对比。
+AutoTrain 4.0 用自然语言驱动 DLCV AI Training Platform：解析训练/测试/定位需求、匹配数据集、生成配置、操作训练界面、监控任务，并在训练后做推理评估与 Baseline 对比。
 
-项目支持命令行、PyQt 桌面端和 Vue Web 控制台。三种入口最终都由 `auto_train4.0.py` 编排，并调用 `auto_train2.0.py` 完成 DLCV 平台自动化。
+入口支持命令行、PyQt 桌面端和 Vue Web 控制台。三种入口最终都由 `auto_train4.0.py` 编排，训练执行仍交给 `auto_train2.0.py`（WebBridge UI 自动化）。
+
+自然语言链路**依赖 OpenAI 兼容 LLM**（默认 DeepSeek），本地仅做规范、纠偏与文件系统搜索，没有“纯规则也能完整跑通”的兜底。
+
+---
 
 ## 当前能力
 
+- **多意图模式**（由 LLM 判定，本地再纠偏）：
+  - `train`：完整训练链路
+  - `test`：测试最近模型 / 评估
+  - `locate`：只定位数据集路径，**不**生成训练配置、不启动平台
+  - `chat`：通用对话
+  - `dry_run`：生成配置 / `.dva` 后停止（也可由 CLI `--dry-run` 强制）
 - 一句话创建 OCR、CLS、DET、DETR、ISEG、SSEG、旋转框检测任务。
-- 从一条提示词中提取多个任务并按顺序执行；单个任务失败时继续后续任务，结束后统一返回失败汇总。
-- 按任务独立解析数据增强，支持随机翻转、随机固定角度旋转、随机裁剪、亮度/对比度等选项，避免多任务参数串扰。
-- 自动扫描并匹配数据集，置信度不足时停止执行，防止选错数据。
-- 使用 LLM 分析训练需求并调整项目说明和超参数。
-- 通过 Playwright 网页模式或 WebView2 CDP 壳端模式操作 DLCV 平台。
-- WebBridge 失败时尝试通过 DLCV 后端 API 启动训练。
-- 自动生成 `.dva` 项目文件并收集最终 `.dvp` 模型。
-- 训练完成后可生成推理报告，或与 `Baseline Models/` 中的模型对比。
-- 非训练输入自动进入通用对话；多行中文回复使用 JSON 行协议传给前端，避免回复只显示一半。
-- 每次训练使用独立的 `work/<run_id>/`，成功任务只保留核心产物，失败任务保留错误复现证据。
+- 一条提示词可拆出多个任务并**顺序执行**；单任务失败不中断后续，结束后汇总失败项。
+- 按任务独立解析数据增强（翻转、固定角度旋转、裁剪、亮度/对比度等），避免多任务串扰。
+- **数据集定位四级优先级**：
+  1. CLI `--folder`
+  2. 提示词 / 意图中的**真实存在**的完整绝对路径
+  3. **NL 锚点有界深搜**（口语盘符 + 目录片段 + 项目名）
+  4. `--scan-dir` 多根浅扫（depth=1）+ 任务关键字 + LLM 选择
+- LLM 把口语脑补成不存在路径（如 `Z:\zzh\易格技术`）时会**降级为 hint** 并继续深搜，而不是直接失败。
+- 提示词中的 `iseg` / `sseg` 等简写会复核纠正任务类型。
+- 多根扫描根、自定义模型输出目录（`--output-dir`）。
+- Playwright 网页 或 WebView2 CDP 壳端；WebBridge 失败时 API 兜底启动训练。
+- 自动生成 `.dva`，收集最终 `.dvp`；成功/失败分别收敛 `work/<run_id>/` 产物。
+- 训练后可选推理报告或 Baseline 对比。
+- 多行中文助手回复经 `[CHAT_RESPONSE_JSON]` 协议传给前端，避免截断。
+
+---
 
 ## 运行流程
 
 ```text
 自然语言提示词
-    ↓
-LLM 解析一个或多个任务
-    ↓
-逐任务匹配数据集并创建独立 run 目录
-    ↓
-需求判断与配置生成
-    ↓
-AutoTrain 2.0 启动 DLCV 平台
-    ↓
-WebBridge 配置界面并启动训练（失败时 API 兜底）
-    ↓
-监控状态并收集 .dva / .dvp
-    ↓
-清理运行期冗余文件
-    ↓
+        ↓
+LLM 解析 intent_action + 一个或多个 task
+        ↓
+┌───────┼────────┬─────────┐
+│       │        │         │
+train  test    locate     chat
+│       │        │         │
+│       │        │         └→ 结合最近 run 上下文回复
+│       │        └→ 四级定位 → 打印路径 / CHAT_RESPONSE（不训练）
+│       └→ 读 auto_latest_*.json + 最新 .dvp → 推理/对比
+│
+逐任务：匹配数据集 → 独立 run 目录
+        ↓
+需求判断（Judge）+ 配置生成（ConfigBuilder）
+        ↓
+auto_train2.0.py + WebBridge（失败则 API）
+        ↓
+监控并收集 .dva / .dvp → 清理冗余
+        ↓
 可选：推理报告 / Baseline 对比
 ```
+
+---
 
 ## 项目结构
 
 ```text
 kimi_gui_automation/
-├── auto_train4.0.py              # 自然语言、多任务、归档和训练后操作入口
+├── auto_train4.0.py              # 自然语言编排入口（多任务 / locate / test / chat）
 ├── auto_train2.0.py              # DLCV 平台启动、UI 自动化与训练监控
-├── autotrain4/                   # AutoTrain 4.0 核心模块
-│   ├── common.py                 # 任务映射、默认值和路径工具
-│   ├── nlu.py                    # 训练/测试/通用对话意图解析
-│   ├── resolver.py               # 数据集扫描与匹配
-│   ├── judge.py                  # LLM 需求判断
-│   ├── config_builder.py         # 任务配置生成
-│   ├── llm_client.py             # OpenAI 兼容 LLM 客户端
-│   ├── inference_client.py       # DLCV 推理接口客户端
-│   ├── evaluator.py              # 推理报告和 Baseline 对比
-│   ├── run_context.py            # run 目录、异常记录和产物清理
-│   └── output_protocol.py        # 子进程与前端的结构化回复协议
+├── autotrain4/                   # AutoTrain 4.0 核心
+│   ├── common.py                 # 任务映射、路径/盘符/NL 线索与锚点工具
+│   ├── nlu.py                    # 意图解析（train/test/locate/chat）与纠偏
+│   ├── resolver.py               # 显式路径 / NL 深搜 / 多根浅扫
+│   ├── judge.py                  # LLM 需求可行性判断
+│   ├── config_builder.py         # 基于模板生成任务 JSON
+│   ├── llm_client.py             # OpenAI 兼容客户端 + intent/select_dataset
+│   ├── inference_client.py       # DLCV 推理 HTTP 客户端
+│   ├── evaluator.py              # 推理报告与 Baseline 对比
+│   ├── run_context.py            # run 目录、异常与产物清理
+│   └── output_protocol.py        # 子进程 ↔ 前端结构化回复
 ├── kimi_webbridge/               # Playwright / WebView2 CDP 适配器
-├── config/                       # 各任务基础模板和运行时最新配置
+├── config/                       # 任务模板 + 运行时 auto_latest_*.json
 ├── pyqt_frontend/                # PyQt5 桌面工作台
-├── web_frontend/                 # Vue 3 + Vite + Flask Web 工作台
-├── tests/                        # 多任务、回复协议和产物策略回归测试
-├── AI训练平台测试/               # 默认数据集扫描根目录（本地数据，不建议提交）
-├── Baseline Models/              # 可选 Baseline .dvp（不建议直接提交）
-├── record/                       # 通用对话历史等运行数据
-├── failed_runs/                  # 未创建正常 run 前的早期失败记录
-└── README.md                     # PyQt“查看文档”读取的文件
+├── web_frontend/                 # Vue 3 + Vite + Flask Web 控制台
+├── tests/                        # 回归测试（多任务 / NL 定位 / locate / 产物策略）
+├── AI训练平台测试/               # 默认数据集扫描根（本地数据，勿提交）
+├── Baseline Models/              # 可选 Baseline .dvp（勿直接提交）
+├── record/                       # 对话历史、录屏等运行数据
+├── failed_runs/                  # run 创建前的早期失败记录
+├── FLOWCHART.md                  # 调用链示意（可能略旧，以本 README 为准）
+└── README.md                     # 本文档（PyQt「查看文档」也会读它）
 ```
+
+权威实现在仓库根目录；`dlcv-auto-train/` 若存在仅为历史快照，不要以其为准改代码。
+
+---
 
 ## 环境要求
 
 - Windows 10/11
 - Python 3.11 或兼容版本
-- Node.js 18+（仅 Web 前端需要）
+- Node.js 18+（仅 Web 前端）
 - 已安装 DLCV AI Training Platform
-- 可访问的 OpenAI 兼容 LLM；自然语言解析没有规则兜底，因此 API Key 是必需的
+- 可访问的 OpenAI 兼容 LLM（**必需**）
 - Playwright Chromium，或支持远程调试的 WebView2 壳端
-- DLCV Test 推理服务（只在生成推理报告时需要，默认 `http://127.0.0.1:9890`）
+- DLCV Test 推理服务（仅推理报告需要，默认 `http://127.0.0.1:9890`）
 
 ### 安装核心依赖
 
-当前仓库没有统一的根目录 `requirements.txt`，可先安装核心依赖：
+仓库根目录暂无统一 `requirements.txt`，可先：
 
 ```powershell
 python -m pip install openai python-dotenv requests tqdm PyYAML psutil playwright
 python -m playwright install chromium
 ```
 
-使用 PyQt 桌面端时：
-
 ```powershell
+# PyQt 桌面端
 python -m pip install -r pyqt_frontend/requirements.txt
-```
 
-使用 Web 控制台时：
-
-```powershell
+# Web 控制台
 python -m pip install -r web_frontend/requirements.txt
 ```
 
+---
+
 ## LLM 配置
 
-程序启动时会读取项目根目录的 `.env`。推荐使用 AutoTrain 通用变量：
+启动时读取项目根目录 `.env`。推荐：
 
 ```dotenv
 AUTOTRAIN_LLM_BASE_URL=https://api.deepseek.com
@@ -110,38 +135,41 @@ AUTOTRAIN_LLM_API_KEY=your_api_key
 AUTOTRAIN_LLM_MODEL=deepseek-chat
 ```
 
-也兼容 DeepSeek 专用变量：
+兼容 DeepSeek 专用变量：
 
 ```dotenv
 DEEPSEEK_API_KEY=your_api_key
 DEEPSEEK_MODEL=deepseek-chat
 ```
 
-优先级为显式传入值、`AUTOTRAIN_LLM_*`、`DEEPSEEK_*`。不要把 `.env` 或带有密钥的 `pyqt_frontend/settings.json` 提交到 Git。
+优先级：显式传入 → `AUTOTRAIN_LLM_*` → `DEEPSEEK_*`。  
+**不要**提交 `.env` 或含密钥的 `pyqt_frontend/settings.json`。
+
+---
 
 ## DLCV 平台配置
 
-平台 EXE 按以下顺序确定：
+平台 EXE 解析顺序：
 
-1. 命令行 `--platform-exe`。
-2. 环境变量 `DLCV_TRAIN_EXE`。
-3. 当前任务 JSON 模板中的 `platform.executable_path`。
-4. 自动扫描常见安装目录。
-
-默认服务地址：
+1. `--platform-exe`
+2. 环境变量 `DLCV_TRAIN_EXE`
+3. 任务 JSON 模板中的 `platform.executable_path`
+4. 常见安装目录自动扫描
 
 | 服务 | 默认地址 | 用途 |
 |---|---|---|
-| DLCV 训练后端 | `http://127.0.0.1:9887` | 项目、超参数和训练状态 API |
-| DLCV 训练前端 | `http://localhost:8842` 或模板中的地址 | Playwright 操作的训练页面 |
-| WebView2 CDP | `127.0.0.1:9222` | 连接桌面壳端页面 |
-| DLCV Test 推理后端 | `http://127.0.0.1:9890` | 新模型推理和 Baseline 对比 |
-| AutoTrain Flask | `http://127.0.0.1:5000` | Web 控制台 API 与生产页面 |
-| Vite 开发服务器 | `http://127.0.0.1:5173` | Web 前端热更新 |
+| DLCV 训练后端 | `http://127.0.0.1:9887` | 项目、超参、训练状态 API |
+| DLCV 训练前端 | `http://localhost:8842` 或模板地址 | Playwright 操作页 |
+| WebView2 CDP | `127.0.0.1:9222` | 桌面壳端页面 |
+| DLCV Test 推理 | `http://127.0.0.1:9890` | 新模型推理 / Baseline 对比 |
+| AutoTrain Flask | `http://127.0.0.1:5000` | Web 控制台 API 与生产页 |
+| Vite 开发服 | `http://127.0.0.1:5173` | 前端热更新 |
+
+---
 
 ## 数据集约定
 
-默认扫描目录是 `AI训练平台测试/`。一级目录名称应包含任务关键词，训练数据放在其中一个候选子目录中：
+默认扫描根：`AI训练平台测试/`。一级目录名宜含任务关键词，训练数据放在候选子目录中：
 
 ```text
 AI训练平台测试/
@@ -154,51 +182,73 @@ AI训练平台测试/
 └── 7-ROTATE/训练集/
 ```
 
-支持的训练集子目录名称依次包括：`训练集`、`1-训练集`、`训练`、`train`、`dataset`。也可以使用 `--scan-dir` 更换根目录（支持多根，见下），或用 `--folder` 为第一个任务指定目录。
+识别的训练集子目录名（优先级顺序）：`训练集`、`1-训练集`、`训练`、`train`、`dataset`。
+
+可用 `--scan-dir` 换根（支持多根），或用 `--folder` 为**第一个**任务指定目录。
 
 ### 多根目录浅扫
 
-数据分散在多个磁盘/目录时，可一次指定多个扫描根。每个根下仍只扫**直接子目录**（与原先单根行为一致），再合并候选交给 LLM 选择：
+每个根下只扫**直接子目录**，再合并候选给 LLM：
 
 ```powershell
-# 方式 1：重复 --scan-dir
+# 重复 --scan-dir
 python auto_train4.0.py --prompt "训练 OCR" --scan-dir Z:\AI训练平台测试 --scan-dir Y:\datasets
 
-# 方式 2：单参数内用 ; 或 | 分隔
+# 单参数内用 ; 或 | 分隔
 python auto_train4.0.py --prompt "训练 OCR" --scan-dir "Z:\AI训练平台测试;Y:\datasets;C:\data"
 ```
 
-不存在的根会跳过并打警告；全部不存在则报错。多根下若出现同名项目文件夹，匹配结果以完整路径区分（LLM 会收到 `path` 字段）。
+不存在的根会跳过并警告；全部不存在则报错。同名文件夹靠完整 `path` 消歧。
 
 ### 自然语言模糊定位（锚点有界深搜）
 
-除完整绝对路径与 `--folder` 外，提示词里可以用**口语盘符 + 目录名/项目名**描述数据位置，无需写准路径：
+除完整绝对路径与 `--folder` 外，可用**口语盘符 + 目录名/项目名**描述位置：
 
 ```powershell
 python auto_train4.0.py --prompt "帮我训练一个 iseg 模型，训练集是 z 盘 zzh 文件夹中的易格技术，默认参数" --generate-config-only
 ```
 
-解析顺序：
+**解析顺序：**
 
 1. CLI `--folder`
-2. 提示词中的完整绝对路径（如 `Z:\项目\2-训练集实例分割`）
-3. **NL 锚点深搜**：从 `z盘`/`Z:` 等推出盘符，结合 `zzh`、`易格` 等片段在锚点下有界递归（默认深度 4），按项目名/任务关键字/训练集结构打分，必要时 LLM 消歧
-4. 回退到 `--scan-dir` 多根浅扫 + 任务关键字
+2. 提示词中的完整绝对路径（且优先要求真实存在；LLM 幻觉路径会降级）
+3. **NL 锚点深搜**：`z盘`/`Z:` → 盘符，结合 `zzh`、`易格` 等在锚点下有界递归（默认深度 4），按项目名 / 任务关键字 / 训练集结构打分，必要时 LLM 消歧
+4. 回退 `--scan-dir` 多根浅扫 + 任务关键字
 
-限制与安全：
+**限制与安全：**
 
-- 必须能推出可搜索线索（盘符片段、目录名或项目名）；**不会**在无关键词时整盘扫描 `Z:\`
-- 跳过 `work`、`checkpoints`、`.git` 等目录
-- `--scan-depth N` 调整深度；`--no-nl-locate` 可关闭该层（仅显式路径 / 浅扫）
-- LLM 若把口语描述脑补成不存在的完整路径（如 `Z:\zzh\易格技术`），会被降级为 `dataset_hint` 并继续走锚点深搜，而不是直接失败
-- 提示词里的 `iseg`/`sseg` 等简写会复核纠正任务类型，避免与语义分割等混淆
+- 必须有可搜索线索（路径片段或项目名）；**禁止**无关键词时整盘扫 `Z:\`
+- 跳过 `work`、`checkpoints`、`.git`、`node_modules` 等
+- `--scan-depth N` 调深度；`--no-nl-locate` 关闭深搜层
+- LLM 脑补不存在路径 → 降为 `dataset_hint`，继续锚点深搜
+- `iseg`/`sseg` 等简写会纠正错误的 task_type
 
-本机验收示例（口语定位，无需准确路径）：
+**本机验收示例：**
 
 ```text
 prompt: 帮我训练一个iseg模型 训练集是z盘zzh文件夹中的易格技术 默认参数
-→ dataset_dir: \\...\zzh\A-易格技术\A260804-温州易格-奥图\2-训练集实例分割\1-训练集
+→ task_type: 实例分割
+→ dataset_dir: ...\zzh\A-易格技术\...\2-训练集实例分割\1-训练集
 ```
+
+### 仅定位数据集（locate）
+
+不需要开训、只想确认数据在哪时：
+
+```powershell
+python auto_train4.0.py --prompt "帮我定位 z 盘 zzh 里易格技术的 iseg 训练集"
+```
+
+行为：
+
+- `mode=locate`，`needs_training=false`
+- 走与训练相同的四级匹配
+- 打印 `[DATASET_DIR]`、`[PROJECT_DIR]` 与结构化中文说明
+- **不**写训练配置、**不**调 `auto_train2.0.py`
+
+含「定位 / 查找 / 在哪 / locate」等语气且无明确开训动词时，应判为 locate，而不是误开训。
+
+---
 
 ## 命令行使用
 
@@ -214,7 +264,7 @@ python auto_train4.0.py --prompt "训练一个 OCR 模型"
 python auto_train4.0.py --prompt "训练 CLS 模型，启用随机固定角度旋转；再训练 OCR 模型；再训练 SSEG 模型并启用随机翻转"
 ```
 
-每个任务都会创建独立配置和 run 目录。批量任务的中间任务不会等待训练后交互，也不会保持窗口打开；最后一个任务才应用 `keep-alive` 和 `keep-browser-open` 设置。
+每个任务独立配置与 run 目录。批量时中间任务不 `keep-alive` / 不长时间占窗口；**仅最后一个任务**应用用户的 keep 设置。批量任务默认 `--force-new` 且不 `--reuse`。
 
 ### 只生成配置
 
@@ -228,7 +278,16 @@ python auto_train4.0.py --prompt "训练一个 DET 模型" --generate-config-onl
 python auto_train4.0.py --prompt "训练一个 CLS 模型" --dry-run
 ```
 
-### 使用 WebView2 壳端
+### 指定模型输出目录
+
+```powershell
+python auto_train4.0.py --prompt "训练 iseg，数据在 z盘zzh 易格" --output-dir "D:\models\yige"
+# run 落在 D:\models\yige\work\<run_id>\
+```
+
+也支持在提示词中写「模型输出到 `D:\...`」（与训练集路径区分）。
+
+### WebView2 壳端
 
 ```powershell
 python auto_train4.0.py `
@@ -244,7 +303,7 @@ python auto_train4.0.py `
 python auto_train4.0.py --prompt "测试最近训练的 OCR 模型" --test-latest
 ```
 
-也可以用 `--latest-config` 指定 `auto_latest_*.json`，使用 `--baseline-model` 指定 `.dvp` 基准模型。
+可用 `--latest-config` 指定 `auto_latest_*.json`，`--baseline-model` 指定 `.dvp`。
 
 ### 通用对话
 
@@ -252,44 +311,61 @@ python auto_train4.0.py --prompt "测试最近训练的 OCR 模型" --test-lates
 python auto_train4.0.py --prompt "最近一次 OCR 任务为什么失败？"
 ```
 
-当 LLM 判断输入不需要训练或测试时，程序会结合最近三个 run 目录回答，并将历史默认保存到 `record/chat_history.json`。使用 `--clear-chat-history` 可在本次启动前清空历史。
+非训练/测试/定位时进入对话，结合最近约 3 个 run 目录回答；历史默认 `record/chat_history.json`。`--clear-chat-history` 可在启动前清空。
 
 ### 常用参数
 
 | 参数 | 说明 |
 |---|---|
 | `--prompt` | 必填，自然语言需求 |
-| `--scan-dir` | 数据集扫描根，可重复或用 `;`/`|` 分隔多根；默认 `AI训练平台测试` |
-| `--folder` | 直接指定第一个任务的数据集项目目录（绝对路径或任一扫描根下的相对名） |
-| `--adapter` | `playwright` 或 `webview2_cdp`；解析器还保留测试适配器选项 |
-| `--platform-exe` | DLCV 壳端 EXE 路径 |
+| `--scan-dir` | 扫描根，可重复或 `;`/`\|` 分隔多根；默认 `AI训练平台测试` |
+| `--folder` | 第一个任务的数据集目录（绝对路径或任一扫描根下相对名） |
+| `--scan-depth` | NL 锚点相对最大深度，默认 `4` |
+| `--no-nl-locate` | 关闭 NL 深搜，仅显式路径 / folder / 浅扫 |
+| `--output-dir` | 模型与 work 归档根；run 在 `<output-dir>/work/<run_id>/` |
+| `--adapter` | `playwright` / `webview2_cdp`（另保留测试用选项） |
+| `--platform-exe` | DLCV 壳端 EXE |
 | `--cdp-port` | WebView2 CDP 端口，默认 `9222` |
 | `--auto-threshold` | 数据集自动匹配阈值，默认 `0.55` |
-| `--config-out` | 指定生成配置的保存路径 |
-| `--generate-config-only` | 生成 JSON 配置后停止 |
-| `--dry-run` | 生成 `.dva` 后停止，不启动训练 |
-| `--force-new` | 强制创建新项目 |
-| `--reuse` / `--no-reuse` | 是否复用已运行的平台，默认复用 |
-| `--keep-alive` / `--no-keep-alive` | 训练后是否保持 DLCV 平台运行，默认保持 |
-| `--keep-browser-open` / `--no-keep-browser-open` | 训练后是否等待用户关闭窗口，默认等待 |
-| `--record` / `--no-record` | 是否启用录屏，默认启用；成功后会按归档策略清理 |
-| `--post-train` / `--no-post-train` | 是否询问生成报告或对比 Baseline，默认询问 |
-| `--full-train` | 训练集比例设为 100%，用于可复现性验证 |
-| `--test-latest` | 跳过训练，测试最近一次模型 |
-| `--inference-api-url` | 推理服务地址，默认 `http://127.0.0.1:9890` |
-| `--chat-history` | 通用对话记录路径 |
+| `--config-out` | 生成配置保存路径 |
+| `--generate-config-only` | 生成 JSON 后停止 |
+| `--dry-run` | 生成 `.dva` 后停止 |
+| `--force-new` | 强制新建项目 |
+| `--reuse` / `--no-reuse` | 是否复用已运行平台，默认复用（批量任务不复用） |
+| `--keep-alive` / `--no-keep-alive` | 训练后是否保持平台，默认保持 |
+| `--keep-browser-open` / `--no-keep-browser-open` | 训练后是否等待关窗，默认等待 |
+| `--record` / `--no-record` | 是否录屏，默认开；成功后按策略清理 |
+| `--record-dir` | 录屏目录，默认 `./record` |
+| `--post-train` / `--no-post-train` | 是否询问报告/Baseline，默认询问 |
+| `--full-train` | 训练集比例 100%（可复现验证） |
+| `--test-latest` | 跳过训练，测最近模型 |
+| `--latest-config` | 配合 test-latest 的配置路径 |
+| `--baseline-model` | 基准 `.dvp` |
+| `--inference-api-url` | 推理服务，默认 `http://127.0.0.1:9890` |
+| `--inference-report-path` | 推理报告路径 |
+| `--no-progress` | 关闭推理进度条 |
+| `--chat-history` | 对话历史路径 |
+| `--clear-chat-history` | 启动前清空对话历史 |
 
-运行 `python auto_train4.0.py --help` 可查看完整参数。
+完整列表：`python auto_train4.0.py --help`。
+
+---
 
 ## work 目录与产物策略
 
-每个训练任务创建一个独立目录：
+默认每个训练任务：
 
 ```text
 <匹配到的项目目录>/work/<项目目录名>-<YYYYMMDD_HHMMSS>/
 ```
 
-例如：
+若指定了 `--output-dir`（或提示词中的输出目录）：
+
+```text
+<output-dir>/work/<run_id>/
+```
+
+示例：
 
 ```text
 AI训练平台测试/2-CLS/work/2-CLS-20260722_130954/
@@ -297,79 +373,77 @@ AI训练平台测试/2-CLS/work/2-CLS-20260722_130954/
 
 ### 训练成功
 
-只有子流程返回成功并且 run 根目录中找到最终 `.dvp`，才按成功任务收敛。核心保留内容为：
+子流程成功 **且** run 根目录找到最终 `.dvp` 才按成功收敛。保留：
 
 ```text
-config.json                 # 本次最终配置
-runtime_info.json           # Python、系统、进程和任务序号等环境信息
-train.log                   # 训练日志（平台实际生成时）
-*.dva                       # DLCV 项目文件
-*.dvp                       # 最终模型，主要产物
-inference_report.json       # 可选，执行训练后推理时生成
-baseline_compare_report.json# 可选，执行 Baseline 对比时生成
+config.json
+runtime_info.json
+train.log                   # 若平台生成
+*.dva
+*.dvp                       # 主产物
+inference_report.json       # 可选
+baseline_compare_report.json# 可选
 ```
 
-成功后会删除不再需要的浏览器 Profile、重复 stdout、检查点、截图、录屏以及平台生成的重复时间戳临时目录。
+会删除浏览器 Profile、重复 stdout、多余检查点、截图、录屏及平台重复时间戳临时目录。
 
 ### 训练失败
 
-失败任务保留用于复现问题的证据：
+保留复现证据：
 
 ```text
 config.json
 runtime_info.json
 exception.json
-stderr.log                  # 实际产生时保留
-train.log                   # 实际产生时保留
-screenshots/                # 错误现场截图
-screen_recording.mp4        # 错误现场录屏
-checkpoints/                # 只保留最后一个 .dvp 检查点
-*.dva
-*.dvp                       # 若失败前已经生成
+stderr.log / train.log      # 若有
+screenshots/
+screen_recording.mp4
+checkpoints/                # 仅最后一个 .dvp 检查点
+*.dva / *.dvp               # 若已生成
 ```
 
-浏览器用户数据、重复 stdout、空的辅助进程日志和多余检查点仍会删除。如果流程返回成功但没有找到最终 `.dvp`，会按失败任务保留诊断证据。
+若返回成功但无最终 `.dvp`，按失败保留诊断证据。
 
-如果在正常 run 创建前发生异常，错误会保存到：
+run 创建前异常：
 
 ```text
 failed_runs/<时间戳>/work/early-failure-<时间戳>/exception.json
 ```
 
+---
+
 ## 训练后推理与 Baseline
 
-训练完成后，最后一个任务会询问是否：
+最后一个任务（或单任务）在 `--post-train` 开启时会询问：
 
-1. 为新模型生成 `inference_report.json`。
-2. 将新模型与 Baseline 比较并生成 `baseline_compare_report.json`。
-3. 直接结束。
+1. 为新模型生成 `inference_report.json`
+2. 与 Baseline 比较 → `baseline_compare_report.json`
+3. 直接结束
 
-Baseline 查找顺序：命令行 `--baseline-model`、提示词中的 `.dvp` 路径、`Baseline Models/` 中以任务类型开头的最新模型。推理服务默认使用 `http://127.0.0.1:9890`。
+Baseline 顺序：`--baseline-model` → 提示词中的 `.dvp` → `Baseline Models/` 下以任务类型开头的最新模型。
+
+---
 
 ## PyQt 桌面端
-
-启动：
 
 ```powershell
 python pyqt_frontend/main.py
 ```
 
-主要功能：
+- 自然语言输入与建议、快捷模板
+- 分阶段日志与任务状态、训练后报告/对比
+- 设置：DLCV 地址、EXE、Adapter、CDP、LLM
+- 「查看文档」读取根目录 `README.md`
 
-- 自然语言训练需求输入和智能建议。
-- 快捷模板的使用、保存和删除。
-- 分阶段实时日志与当前任务状态。
-- 训练完成后的报告/对比选择。
-- 系统设置：DLCV 地址、EXE、Adapter、CDP 和 LLM。
-- 顶部“查看文档”直接读取项目根目录的 `README.md`。
+本地设置：`pyqt_frontend/settings.json`（可能含 Key，勿提交）。
 
-本地设置保存在 `pyqt_frontend/settings.json`。该文件可能包含 API Key，不应提交到 GitHub。
+---
 
 ## Web 控制台
 
-技术栈：Vue 3、Vite、Pinia、Vue Router 和 Flask。
+技术栈：Vue 3、Vite、Pinia、Vue Router、Flask。
 
-### 生产模式
+### 生产
 
 ```powershell
 cd web_frontend
@@ -380,40 +454,34 @@ python app.py
 
 访问 `http://127.0.0.1:5000`。
 
-### 开发模式
-
-终端一：
+### 开发
 
 ```powershell
+# 终端 1
 cd web_frontend
 python app.py
-```
 
-终端二：
-
-```powershell
+# 终端 2
 cd web_frontend
 npm install
 npm run dev
 ```
 
-访问 `http://127.0.0.1:5173`，Vite 会把 `/api` 代理到 Flask。
-
-### API
+访问 `http://127.0.0.1:5173`（`/api` 代理到 Flask）。
 
 | 路由 | 说明 |
 |---|---|
-| `GET /api/health` | AutoTrain Web 后端健康状态 |
-| `GET /api/run?prompt=...` | 通过 SSE 启动任务并流式返回日志 |
-| `GET /api/tasks` | 最近任务列表 |
-| `GET /api/tasks/<task_id>` | 单个任务文件列表 |
+| `GET /api/health` | 健康检查 |
+| `GET /api/run?prompt=...` | SSE 启动任务并流式日志 |
+| `GET /api/tasks` | 最近任务 |
+| `GET /api/tasks/<task_id>` | 任务文件列表 |
 | `GET /api/datasets` | 数据集列表 |
-| `GET /api/models` | Baseline 模型和最新配置 |
-| `GET /api/templates` | 内置快捷模板 |
+| `GET /api/models` | Baseline 与最新配置 |
+| `GET /api/templates` | 快捷模板 |
+
+---
 
 ## 配置模板
-
-任务与模板的对应关系：
 
 | 任务 | 模板 |
 |---|---|
@@ -425,27 +493,47 @@ npm run dev
 | SSEG / 语义分割 | `config/sseg_train_automation_config.json` |
 | 旋转框检测 | `config/rotate_train_automation_config.json` |
 
-`ConfigBuilder` 会基于模板覆盖当前数据集、run 目录、`.dva` 路径、Adapter、录屏目录、增强选项和 LLM 调整。每次还会生成 `config/auto_latest_<任务>.json`，供最近模型测试和界面展示使用。
+`ConfigBuilder` 基于模板写入数据集、run、`.dva`、Adapter、录屏、增强与 LLM 调整，并更新 `config/auto_latest_<任务>.json`。
 
-模板目前可能含开发机器的绝对路径。提交或部署前应将数据集、work 和平台 EXE 改为当前环境的路径或示例值。
+模板可能含本机绝对路径；提交前请改为示例值。
+
+---
+
+## 核心模块职责（简表）
+
+| 模块 | 职责 |
+|---|---|
+| `auto_train4.0.py` | CLI、编排、locate/test/chat/train、调 2.0、后处理 |
+| `autotrain4/nlu.py` | LLM 意图 → `TrainIntent`；路径可信性；task/mode 纠偏 |
+| `autotrain4/resolver.py` | 数据集四级匹配与打分 |
+| `autotrain4/common.py` | 别名、NL 线索、锚点、路径工具 |
+| `autotrain4/judge.py` | 是否 proceed 与调整建议 |
+| `autotrain4/config_builder.py` | 模板 → 最终 JSON |
+| `autotrain4/llm_client.py` | chat / extract_intent / select_dataset / match_categories |
+| `auto_train2.0.py` | 启平台、WebBridge 点选、监控训练 |
+
+---
 
 ## 测试
-
-运行回归测试：
 
 ```powershell
 python -m unittest tests.test_multitask_regressions -v
 ```
 
-测试覆盖：
+当前覆盖包括：
 
-- 多任务中间任务和最后任务的进程参数。
-- 多行 Unicode 助手回复的完整传输。
-- 不同任务的数据增强隔离。
-- LLM 判断只接收当前任务上下文。
-- 成功任务的最小产物集合。
-- 失败任务的诊断证据和最后检查点。
-- “返回成功但没有最终模型”按失败保留证据。
+- 多任务中间/末任务传给 2.0 的参数策略
+- 多行 Unicode 助手回复协议
+- 数据增强按任务隔离；Judge 只收当前任务上下文
+- 显式路径、多根浅扫、folder 跨根
+- NL 线索提取、锚点、嵌套发现、噪声过滤、work/深度限制
+- 幻觉路径降级、iseg 任务类型纠正
+- **locate 不触发训练**；task_context 措辞
+- `--output-dir` 归档位置
+- 成功/失败产物清理策略；「成功但无 dvp」按失败保留
+- 训练 API 防重复启动
+
+---
 
 ## GitHub 提交建议
 
@@ -476,43 +564,57 @@ AI训练平台测试/
 *.mp4
 ```
 
-基础任务模板应保留，但应清除本机绝对路径。大型模型如确实需要发布，请使用 Git LFS，并确认模型和数据集具有分发权限。
+保留基础任务模板并清掉本机绝对路径。大模型请用 Git LFS，并确认分发权限。
+
+---
 
 ## 常见问题
 
 ### 提示 LLM 未配置
 
-确认根目录 `.env` 中已设置 `AUTOTRAIN_LLM_API_KEY` 或 `DEEPSEEK_API_KEY`，并已安装 `openai` 与 `python-dotenv`。
+根目录 `.env` 设置 `AUTOTRAIN_LLM_API_KEY` 或 `DEEPSEEK_API_KEY`，并安装 `openai`、`python-dotenv`。
 
 ### 数据集匹配置信度不足
 
-检查一级目录名称是否包含任务关键词，并确认训练集子目录符合约定。确定目录无误时可使用 `--folder`，不建议盲目降低 `--auto-threshold`。
+检查一级目录是否含任务关键词、训练集子目录是否符合约定。确定目录时用 `--folder`，勿盲目降低 `--auto-threshold`。口语场景确认是否带盘符/目录/项目名线索。
+
+### 口语路径被拼成错误绝对路径
+
+当前版本会忽略不存在的幻觉路径并走 NL 深搜。若仍失败，可加 `--folder` 或写真实绝对路径。
+
+### 只想找数据却启动了训练
+
+使用「定位 / 查找 / 在哪」等表述，且不要带「训练/开训」。日志中 `mode` 应为 `locate`。
 
 ### WebBridge 无法连接
 
-- Playwright：确认 DLCV 前端地址可访问，并已执行 `python -m playwright install chromium`。
-- WebView2：确认 EXE 路径正确、`9222` 未被占用，并选择 `webview2_cdp`。
-- 自动化操作失败后会尝试后端 API 兜底；两条路径都失败时查看 run 中的 `exception.json`、截图和录屏。
+- Playwright：前端地址可达，`python -m playwright install chromium`
+- WebView2：EXE 正确、CDP 端口空闲、`--adapter webview2_cdp`
+- 双路径失败时看 run 内 `exception.json`、截图、录屏
 
-### Web 页面为空白
+### Web 页面空白
 
-生产模式必须先在 `web_frontend/` 执行 `npm run build`。开发模式直接访问 Vite 的 `http://127.0.0.1:5173`。
+生产模式需先 `web_frontend` 下 `npm run build`；开发模式访问 Vite `5173`。
 
-### 助手回复只显示前半段
+### 助手回复只显示一半
 
-当前版本使用 `[CHAT_RESPONSE_JSON]` 结构化协议传输多行回复，PyQt 和 Web 状态层会解析完整内容。若仍出现问题，请确认前后端均为当前版本，不要混用旧版入口文件。
+需前后端都支持 `[CHAT_RESPONSE_JSON]` 协议，勿混用旧入口。
 
-### 训练返回成功但 work 中没有 `.dvp`
+### 训练成功但 work 中无 `.dvp`
 
-当前版本不会把这种情况当作有效成功，而会保留失败诊断证据。检查 `exception.json`、`train.log`、`stderr.log` 以及最后检查点。
+不会当作有效成功，会保留失败诊断。检查 `exception.json`、`train.log`、`stderr.log` 与最后检查点。
+
+---
 
 ## 安全说明
 
-- 不要提交 `.env`、API Key、本机用户目录、数据集或训练录屏。
-- `pyqt_frontend/settings.json` 是本机设置，不是可公开分发的默认配置。
-- `config/auto_latest_*.json` 是运行产物，可能暴露本机数据集和 work 路径。
-- 在公开仓库发布 DLCV 平台相关文件、模型和数据前，请先确认许可证与分发权限。
+- 勿提交 `.env`、API Key、本机用户目录、数据集或训练录屏
+- `pyqt_frontend/settings.json` 为本地设置
+- `config/auto_latest_*.json` 为运行产物，可能含本机路径
+- 公开分发平台相关文件、模型、数据前确认许可证
+
+---
 
 ## 许可证
 
-当前项目为内部工具。未经授权，请勿商用或二次分发。
+内部工具。未经授权请勿商用或二次分发。

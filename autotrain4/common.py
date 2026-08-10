@@ -825,109 +825,64 @@ def _iter_hint_tokens(hint: str) -> List[str]:
 
 
 def extract_location_clues(
-    prompt: str,
+    prompt: str = "",
     dataset_hint: str = "",
     task_type: str = "",
     extra_keywords: Optional[Sequence[str]] = None,
+    *,
+    drives: Optional[Sequence[str]] = None,
+    path_fragments: Optional[Sequence[str]] = None,
+    name_keywords: Optional[Sequence[str]] = None,
 ) -> LocationClues:
-    """从提示词 / dataset_hint 提取盘符、路径片段与项目名关键词。
+    """Assemble location clues from LLM fields only."""
+    _ = prompt
 
-    不处理完整绝对路径（由 ``extract_filesystem_paths`` 负责）。
-    """
-    prompt = str(prompt or "")
-    drives = extract_drive_letters(prompt)
+    drive_list: List[str] = []
+    for d in drives or []:
+        text_d = str(d or "").strip()
+        if not text_d:
+            continue
+        m = re.match('^\\s*([A-Za-z])\\s*:?\\s*[\\\\/]?\\s*$', text_d)
+        if m:
+            drive_list.append(m.group(1).upper() + ":\\")
+        elif re.match('^[A-Za-z]:[\\\\/]', text_d):
+            drive_list.append(text_d[:2].upper() + "\\")
+        else:
+            if not text_d.endswith(("\\", "/")):
+                text_d = text_d + "\\"
+            drive_list.append(text_d)
 
-    # 去掉绝对路径与盘符口语后再分词
-    work = _strip_known_absolute_paths(prompt)
-    work = re.sub(r"(?i)([a-z])\s*盘", " ", work)
+    fragments: List[str] = [
+        str(x).strip() for x in (path_fragments or []) if str(x).strip()
+    ]
+    keywords: List[str] = [
+        str(x).strip() for x in (name_keywords or []) if str(x).strip()
+    ]
 
-    fragments: List[str] = []
-    keywords: List[str] = []
-
-    # dataset_hint 整段优先作为 name keyword（如「易格技术」）
     hint = str(dataset_hint or "").strip()
     if hint and not looks_like_filesystem_path(hint):
-        peeled_hint = _strip_stopword_affixes(hint) or hint
-        if not _is_stopword_token(peeled_hint) and not _is_noisy_keyword(peeled_hint):
-            keywords.append(peeled_hint)
-        keywords.extend(_iter_hint_tokens(peeled_hint))
+        for part in re.split('[\\s,，、/;|\\\\]+', hint):
+            part = part.strip()
+            if not part:
+                continue
+            if re.fullmatch('[A-Za-z][A-Za-z0-9_\\-]{1,63}', part):
+                fragments.append(part)
+            else:
+                keywords.append(part)
 
     if extra_keywords:
         for kw in extra_keywords:
-            text = str(kw or "").strip()
-            if not text:
-                continue
-            peeled = _strip_stopword_affixes(text) or text
-            if peeled and not _is_stopword_token(peeled) and not _is_noisy_keyword(peeled):
-                keywords.append(peeled)
+            text_k = str(kw or "").strip()
+            if text_k:
+                keywords.append(text_k)
 
-    # 拉丁片段：zzh、data01、project_x（长度>=2）
-    for m in re.finditer(r"[A-Za-z][A-Za-z0-9_\-]{1,63}", work):
-        tok = m.group(0)
-        if _is_stopword_token(tok):
-            continue
-        # 盘符单字母已在 drive 中处理
-        if re.fullmatch(r"[A-Za-z]", tok):
-            continue
-        fragments.append(tok)
-
-    # 「xx文件夹/目录」中的名称（优先结构化规则，减少整段噪声）
-    for m in re.finditer(
-        r"([A-Za-z0-9_\-一-鿿]{1,40}?)\s*(?:文件夹|目录)(?:中|里|下|内)?",
-        prompt,
-    ):
-        tok = m.group(1).strip()
-        tok = _strip_stopword_affixes(tok) or tok
-        if _is_stopword_token(tok):
-            continue
-        if re.search(r"[A-Za-z]", tok) and not re.search(r"[一-鿿]", tok):
-            if not _is_stopword_token(tok):
-                fragments.append(tok)
-        else:
-            if not _is_noisy_keyword(tok):
-                keywords.append(tok)
-
-    # 「中的XX / 里的XX / 下的XX」（限制捕获长度，避免吞进整句）
-    for m in re.finditer(
-        r"(?:中的|里的|下的|中|里)\s*([A-Za-z0-9_\-一-鿿]{2,16})",
-        prompt,
-    ):
-        tok = m.group(1).strip()
-        # 截断到第一个停用尾巴
-        tok = re.split(r"(?:默认|参数|模型|训练|文件夹|目录)", tok)[0].strip()
-        tok = _strip_stopword_affixes(tok) or tok
-        if _is_noisy_keyword(tok) or _is_stopword_token(tok):
-            continue
-        if re.fullmatch(r"[A-Za-z0-9_\-]+", tok):
-            fragments.append(tok)
-        else:
-            keywords.append(tok)
-
-    # 中文片段：连续汉字 2+（过滤停用词与“停用词拼接”噪声）
-    task_norms = {normalize_name_for_match(t) for t in TASK_ALIASES.values()}
-    task_norms.update(normalize_name_for_match(a) for a in TASK_ALIASES.keys())
-    for m in re.finditer(r"[一-鿿]{2,20}", work):
-        tok = m.group(0)
-        peeled = _strip_stopword_affixes(tok) or tok
-        if _is_noisy_keyword(peeled) or _is_stopword_token(peeled):
-            continue
-        if normalize_name_for_match(peeled) in task_norms:
-            continue
-        # 任务别名是子串且剥完后几乎只剩任务名
-        if any(
-            normalize_name_for_match(peeled) == normalize_name_for_match(t)
-            for t in TASK_ALIASES.values()
-        ):
-            continue
-        keywords.append(peeled)
-
-    clues = LocationClues(
-        drives=_dedupe_preserve(drives),
+    return LocationClues(
+        drives=_dedupe_preserve(drive_list),
         path_fragments=_dedupe_preserve(fragments),
-        name_keywords=_finalize_name_keywords(keywords),
+        name_keywords=_dedupe_preserve(keywords),
         task_type=str(task_type or "").strip(),
     )
-    return clues
+
 
 
 def _safe_resolve(path: Path) -> Path:
