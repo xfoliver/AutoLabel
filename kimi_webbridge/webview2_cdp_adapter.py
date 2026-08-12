@@ -20,7 +20,7 @@
         "cdp_port": 9222,
         "cdp_host": "127.0.0.1",
         "cdp_timeout": 90,
-        "frontend_url": "http://localhost:8842",
+        "frontend_url": "http://localhost:8843",
         "screenshot_dir": "./webbridge_screenshots",
         "timeout": 120,
         "slow_mo": 300,
@@ -44,6 +44,11 @@ import urllib.request
 from ctypes import wintypes
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+
+try:
+    from autotrain4.constants import DEFAULT_FRONTEND_URL
+except ImportError:  # pragma: no cover
+    DEFAULT_FRONTEND_URL = "http://localhost:8843"
 
 import psutil
 
@@ -111,7 +116,7 @@ class WebView2CDPWebBridgeAdapter(PlaywrightWebBridgeAdapter):
         self.cdp_port = int(config.get("cdp_port", 9222))
         self.cdp_host = config.get("cdp_host", "127.0.0.1")
         self.cdp_timeout = int(config.get("cdp_timeout", 90))
-        self.frontend_url = config.get("frontend_url", "http://localhost:8842")
+        self.frontend_url = config.get("frontend_url", DEFAULT_FRONTEND_URL)
         self.record_video_dir = config.get("record_video_dir")
         self.record_video_size = config.get(
             "record_video_size", {"width": 1920, "height": 1080}

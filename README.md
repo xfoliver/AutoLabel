@@ -66,33 +66,42 @@ auto_train2.0.py + WebBridge（失败则 API）
 
 ```text
 kimi_gui_automation/
-├── auto_train4.0.py              # 自然语言编排入口（多任务 / locate / test / chat）
-├── auto_train2.0.py              # DLCV 平台启动、UI 自动化与训练监控
-├── autotrain4/                   # AutoTrain 4.0 核心
-│   ├── common.py                 # 任务映射、路径/盘符/NL 线索与锚点工具
-│   ├── nlu.py                    # 意图解析（train/test/locate/chat）与纠偏
-│   ├── resolver.py               # 显式路径 / NL 深搜 / 多根浅扫
-│   ├── judge.py                  # LLM 需求可行性判断
-│   ├── config_builder.py         # 基于模板生成任务 JSON
-│   ├── llm_client.py             # OpenAI 兼容客户端 + intent/select_dataset
-│   ├── inference_client.py       # DLCV 推理 HTTP 客户端
-│   ├── evaluator.py              # 推理报告与 Baseline 对比
-│   ├── run_context.py            # run 目录、异常与产物清理
-│   └── output_protocol.py        # 子进程 ↔ 前端结构化回复
+├── auto_train4.0.py              # 薄入口：bootstrap + argparse → autotrain4.orchestrator
+├── auto_train2.0.py              # 薄入口：→ autotrain_exec.cli（平台 / WebBridge / 监控）
+├── autotrain4/                   # AutoTrain 4.0 领域库 + 编排
+│   ├── bootstrap.py              # dotenv + Windows UTF-8（4.0/2.0 共用）
+│   ├── orchestrator.py           # AutoTrain4Orchestrator（多任务 / locate / test / chat）
+│   ├── task_types.py / dataset_fs.py / constants.py / post_train.py
+│   ├── common.py / nlu.py / resolver.py / judge.py / config_builder.py
+│   ├── llm/ + llm_client.py（shim）
+│   ├── inference_client.py / evaluator.py / run_context.py / output_protocol.py
+│   └── …
+├── autotrain_exec/               # 2.0 执行内核（原 auto_train2.0 拆包）
+│   ├── trainer.py                # DLCVAutoTrainer 骨架
+│   ├── config.py / dva.py / platform.py / backend_api.py
+│   ├── monitor.py / webbridge_runner.py / cli.py
+│   └── errors.py
 ├── kimi_webbridge/               # Playwright / WebView2 CDP 适配器
 ├── config/                       # 任务模板 + 运行时 auto_latest_*.json
 ├── pyqt_frontend/                # PyQt5 桌面工作台
 ├── web_frontend/                 # Vue 3 + Vite + Flask Web 控制台
-├── tests/                        # 回归测试（多任务 / NL 定位 / locate / 产物策略）
+├── check_dataset.py              # 数据质检 CLI（保留）
+├── check_dataset_ui.py           # tkinter 质检 GUI（已弃用）
+├── requirements.txt              # 核心 Python 依赖
+├── tests/                        # 回归测试（多任务 / NL 定位 / locate / mode / 产物策略）
+├── docs/architecture.md          # 源码地图（权威入口）
 ├── AI训练平台测试/               # 默认数据集扫描根（本地数据，勿提交）
 ├── Baseline Models/              # 可选 Baseline .dvp（勿直接提交）
 ├── record/                       # 对话历史、录屏等运行数据
 ├── failed_runs/                  # run 创建前的早期失败记录
-├── FLOWCHART.md                  # 调用链示意（可能略旧，以本 README 为准）
 └── README.md                     # 本文档（PyQt「查看文档」也会读它）
 ```
 
-权威实现在仓库根目录；`dlcv-auto-train/` 若存在仅为历史快照，不要以其为准改代码。
+权威实现在仓库根目录。
+
+- **源码地图（入口 / 库 / 废弃）**：见 [`docs/architecture.md`](docs/architecture.md)
+- **历史快照**：`archive/dlcv-auto-train-202608/`（勿改、勿 import；原根目录 `dlcv-auto-train/` 已移入 archive）
+- **本地密钥**：`pyqt_frontend/settings.json` 已 gitignore；从 `pyqt_frontend/settings.example.json` 复制后填写
 
 ---
 
@@ -108,10 +117,10 @@ kimi_gui_automation/
 
 ### 安装核心依赖
 
-仓库根目录暂无统一 `requirements.txt`，可先：
+核心依赖见仓库根目录 `requirements.txt`：
 
 ```powershell
-python -m pip install openai python-dotenv requests tqdm PyYAML psutil playwright
+python -m pip install -r requirements.txt
 python -m playwright install chromium
 ```
 
@@ -123,6 +132,12 @@ python -m pip install -r pyqt_frontend/requirements.txt
 python -m pip install -r web_frontend/requirements.txt
 ```
 
+数据质检：
+
+- CLI：`python check_dataset.py --folder <dir> --task cls`
+- PyQt 工作台内「数据质检」面板（推荐）
+- `check_dataset_ui.py`（tkinter）已弃用，仅兼容保留
+
 ---
 
 ## LLM 配置
@@ -133,7 +148,29 @@ python -m pip install -r web_frontend/requirements.txt
 AUTOTRAIN_LLM_BASE_URL=https://api.deepseek.com
 AUTOTRAIN_LLM_API_KEY=your_api_key
 AUTOTRAIN_LLM_MODEL=deepseek-chat
+AUTOTRAIN_LLM_PROTOCOL=auto
 ```
+
+`AUTOTRAIN_LLM_PROTOCOL`（也可在 PyQt「系统设置」里选）：
+
+| 值 | 行为 |
+|---|---|
+| `auto`（默认） | 先走 OpenAI `chat.completions`；若像协议/路由错误，再试 Anthropic `/v1/messages` |
+| `openai` | 仅 OpenAI 兼容（DeepSeek、Moonshot、官方 `/v1` 等） |
+| `anthropic` | 仅 Anthropic Messages（CC Switch / NewAPI 上 Claude 终端同款网关） |
+
+**直连 DeepSeek 等**：`PROTOCOL=openai` 或 `auto`，`BASE_URL` 填官方地址即可（与改之前一样）。
+
+**走 CC Switch / NewAPI（与 Claude Code 同一套）** 示例：
+
+```dotenv
+AUTOTRAIN_LLM_BASE_URL=http://192.168.1.3:3000
+AUTOTRAIN_LLM_API_KEY=sk-xxx
+AUTOTRAIN_LLM_MODEL=grok-4.5
+AUTOTRAIN_LLM_PROTOCOL=anthropic
+```
+
+`BASE_URL` 写 `http://host:port` 或 `http://host:port/v1` 均可；客户端会按协议自动规范化（Anthropic 不会拼成 `/v1/v1`）。
 
 兼容 DeepSeek 专用变量：
 
@@ -503,14 +540,17 @@ npm run dev
 
 | 模块 | 职责 |
 |---|---|
-| `auto_train4.0.py` | CLI、编排、locate/test/chat/train、调 2.0、后处理 |
+| `auto_train4.0.py` | 薄 CLI 入口（argparse → orchestrator） |
+| `autotrain4/orchestrator.py` | 编排：locate/test/chat/train、调 2.0、后处理交互 |
 | `autotrain4/nlu.py` | LLM 意图 → `TrainIntent`；路径可信性；task/mode 纠偏 |
 | `autotrain4/resolver.py` | 数据集四级匹配与打分 |
-| `autotrain4/common.py` | 别名、NL 线索、锚点、路径工具 |
-| `autotrain4/judge.py` | 是否 proceed 与调整建议 |
+| `autotrain4/common.py` | 路径/NL 线索工具（task 表见 `task_types`） |
+| `autotrain4/judge.py` | adjustments（mode 以 NLU 为准） |
 | `autotrain4/config_builder.py` | 模板 → 最终 JSON |
-| `autotrain4/llm_client.py` | chat / extract_intent / select_dataset / match_categories |
-| `auto_train2.0.py` | 启平台、WebBridge 点选、监控训练 |
+| `autotrain4/post_train.py` | 训练后上下文 + report/compare（CLI/UI 共用） |
+| `autotrain4/llm/` | chat / extract_intent / select_dataset（`llm_client` 为 shim） |
+| `auto_train2.0.py` | 薄 CLI 入口 → `autotrain_exec` |
+| `autotrain_exec/` | 启平台、DVA、API、WebBridge 点选、监控训练 |
 
 ---
 

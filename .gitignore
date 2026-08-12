@@ -1,0 +1,49 @@
+# Secrets / local env
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+dist/
+build/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+*~
+.DS_Store
+Thumbs.db
+
+# Local runtime / UI secrets (do not commit API keys)
+pyqt_frontend/settings.json
+
+# Local data & run artifacts (keep trees out of git noise)
+work/
+failed_runs/
+record/
+webbridge_screenshots/
+AI训练平台测试/
+Baseline Models/
+
+# Nested / archived trees (do not treat as active source)
+archive/
+
+# Frontend build deps (if present under monorepo)
+**/node_modules/
+dlcv-train-frontend/node_modules/
+web_frontend/node_modules/

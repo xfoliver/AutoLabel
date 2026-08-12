@@ -1,0 +1,38 @@
+{
+  "backend_url": "http://127.0.0.1:9887",
+  "frontend_url": "http://localhost:8843",
+  "platform_exe": "C:\\dlcv\\Lib\\site-packages\\dlcv_train\\DLCV AI Training Platform-win_x64.exe",
+  "cdp_port": "9222",
+  "adapter": "webview2_cdp",
+  "llm_base_url": "http://192.168.1.3:3000/v1",
+  "llm_api_key": "",
+  "llm_model": "grok-4.5",
+  "llm_protocol": "anthropic",
+  "llm_profiles": [
+    {
+      "id": "0db942620330",
+      "name": "xAI / Grok (grok-4.5)",
+      "provider": "xai",
+      "base_url": "http://192.168.1.3:3000/v1",
+      "api_key": "",
+      "model": "grok-4.5",
+      "protocol": "anthropic",
+      "timeout": 60,
+      "enabled": true
+    },
+    {
+      "id": "e9b0a426c3af",
+      "name": "deepseek",
+      "provider": "deepseek",
+      "base_url": "https://api.deepseek.com",
+      "api_key": "",
+      "model": "deepseek-chat",
+      "protocol": "openai",
+      "timeout": 60,
+      "enabled": true
+    }
+  ],
+  "llm_active_id": "0db942620330",
+  "assistant_summary": "1",
+  "assistant_summary_llm": "1"
+}

@@ -4,6 +4,7 @@
 - TrainWorker：执行 auto_train4.0.py 子进程并通过信号把日志发回 UI
 - PostTrainWorker：训练成功后在桌面端直接跑 inference report / baseline 对比
   （不走 4.0 CLI 的 LLM + input，避免嵌套 stdin 卡死）
+- AssistantSummaryWorker：训练 / 质检 / 评估结束后生成助手摘要（模板 + 可选 LLM）
 """
 
 from __future__ import annotations
@@ -35,67 +36,25 @@ if load_dotenv is not None:
     if _dotenv_path.exists():
         load_dotenv(dotenv_path=_dotenv_path, override=True)
 
-from autotrain4.common import (  # noqa: E402
-    baseline_dir,
-    find_baseline_model,
-    find_latest_config,
-    find_latest_dvp,
-    resolve_path,
+from autotrain4.output_protocol import (  # noqa: E402
+    decode_at4_event,
+    decode_chat_response,
 )
-from autotrain4.output_protocol import decode_chat_response  # noqa: E402
+from autotrain4.post_train import (  # noqa: E402
+    resolve_post_train_context as _resolve_post_train_context,
+    run_post_train_action,
+)
 
 AUTO_TRAIN = PROJECT_ROOT / "auto_train4.0.py"
-DEFAULT_INFERENCE_URL = "http://127.0.0.1:9890"
+try:
+    from autotrain4.constants import DEFAULT_INFERENCE_URL
+except ImportError:  # pragma: no cover
+    DEFAULT_INFERENCE_URL = "http://127.0.0.1:9890"
 
 
 def resolve_post_train_context() -> tuple[Optional[Dict[str, Any]], Optional[str]]:
-    """解析训练后评估所需路径。
-
-    Returns:
-        (context_dict, error_message)
-        context 含: config_path, task_type, dataset_dir, work_dir, new_dvp, baseline_dvp
-    """
-    cfg_path = find_latest_config()
-    if not cfg_path:
-        return None, "未找到 config/auto_latest_*.json，无法做训练后评估"
-
-    try:
-        with open(cfg_path, "r", encoding="utf-8") as f:
-            cfg = json.load(f)
-    except Exception as e:
-        return None, f"读取配置失败: {e}"
-
-    project = cfg.get("project", {}) or {}
-    task_type = project.get("task_type") or ""
-    dataset_dir = project.get("dataset_dir")
-    work_dir = project.get("work_dir")
-
-    if not dataset_dir or not work_dir:
-        return None, "配置缺少 project.dataset_dir 或 project.work_dir"
-
-    dataset_path = resolve_path(dataset_dir)
-    work_path = resolve_path(work_dir)
-
-    if not dataset_path.exists():
-        return None, f"测试集目录不存在: {dataset_path}"
-    if not work_path.exists():
-        return None, f"工作目录不存在: {work_path}"
-
-    new_dvp = find_latest_dvp(work_path)
-    if not new_dvp:
-        return None, f"工作目录下未找到 .dvp 模型: {work_path}"
-
-    baseline = find_baseline_model(task_type) if task_type else None
-
-    return {
-        "config_path": str(cfg_path),
-        "task_type": task_type,
-        "dataset_dir": str(dataset_path),
-        "work_dir": str(work_path),
-        "run_dir": str(work_path),
-        "new_dvp": str(new_dvp),
-        "baseline_dvp": str(baseline) if baseline else None,
-    }, None
+    """解析训练后评估所需路径（委托 autotrain4.post_train，保持 UI 调用签名）。"""
+    return _resolve_post_train_context()
 
 
 class TrainWorker(QThread):
@@ -131,10 +90,8 @@ class TrainWorker(QThread):
         super().__init__(parent)
         self.prompt = prompt
         self.settings = settings or {}
-        self.llm_settings = {
-            k: v for k, v in (settings or {}).items()
-            if k.startswith("llm_")
-        }
+        # 完整 settings（含 llm_profiles）；子进程通过 env 桥接注入
+        self.llm_settings = dict(settings or {})
         self._running = True
         self.process: Optional[subprocess.Popen] = None
         self._close_prompted = False
@@ -172,17 +129,18 @@ class TrainWorker(QThread):
             cmd.extend(["--cdp-port", str(cdp_port)])
             if platform_exe:
                 cmd.extend(["--platform-exe", platform_exe])
-        env = os.environ.copy()
+        from autotrain4.llm import inject_llm_env_for_subprocess, runtime_from_settings
+
+        env = inject_llm_env_for_subprocess(os.environ, self.llm_settings)
         env["PYTHONIOENCODING"] = "utf-8"
         env["AUTOTRAIN_CLOSE_SIGNAL"] = str(self._close_signal_path)
 
-        # 注入用户在 UI 设置的 LLM 配置（如果填写了）
-        if self.llm_settings.get("llm_base_url"):
-            env["AUTOTRAIN_LLM_BASE_URL"] = self.llm_settings["llm_base_url"]
-        if self.llm_settings.get("llm_api_key"):
-            env["AUTOTRAIN_LLM_API_KEY"] = self.llm_settings["llm_api_key"]
-        if self.llm_settings.get("llm_model"):
-            env["AUTOTRAIN_LLM_MODEL"] = self.llm_settings["llm_model"]
+        rt = runtime_from_settings(self.llm_settings)
+        self._emit_and_log(
+            f"[LLM] profile={rt.profile_name or '(default)'} "
+            f"base={rt.base_url or '(空)'} model={rt.model or '(空)'} "
+            f"protocol={rt.protocol or 'auto'}"
+        )
 
         try:
             self.process = subprocess.Popen(
@@ -256,6 +214,12 @@ class TrainWorker(QThread):
             self.chat_response.emit(chat_response)
             return
 
+        # 优先解析结构化 __AT4__ 事件；旧字符串 marker 作 fallback
+        at4 = decode_at4_event(line)
+        if at4 is not None:
+            self._handle_at4_event(at4, line=line, is_stderr=is_stderr)
+            return
+
         # 捕获 [RUN_DIR] 标记，初始化本地日志文件
         if line.startswith("[RUN_DIR] "):
             run_dir = Path(line[len("[RUN_DIR] "):].strip())
@@ -269,6 +233,25 @@ class TrainWorker(QThread):
         if not self._close_prompted and "训练已完成，浏览器窗口将保持打开" in line:
             self._close_prompted = True
             self.prompt_for_close.emit()
+
+    def _handle_at4_event(
+        self, event: Dict[str, Any], *, line: str, is_stderr: bool
+    ) -> None:
+        """处理 autotrain4 结构化 IPC 行。"""
+        etype = str(event.get("type") or "")
+        if etype == "run_dir":
+            path_raw = event.get("path") or ""
+            run_dir = Path(str(path_raw).strip())
+            if run_dir.exists():
+                self._init_run_logs(run_dir)
+        elif etype == "stage" and str(event.get("name") or "") == "train_done":
+            if not self._close_prompted:
+                # train_done 仅作阶段信号；关闭确认仍由文案/旧 marker 触发
+                pass
+        # 结构化行也进日志，便于排查
+        self.log_received.emit(line)
+        self._observe_log_line(line)
+        self._write_log(line, is_stderr=is_stderr)
 
     def _emit_and_log(self, line: str) -> None:
         self.log_received.emit(line)
@@ -363,12 +346,94 @@ class TrainWorker(QThread):
             pass
 
 
+class AssistantSummaryWorker(QThread):
+    """后台生成助手摘要（模板 + 可选 LLM 润色），避免卡住 UI。"""
+
+    finished_ok = pyqtSignal(str)
+    finished_err = pyqtSignal(str)
+
+    def __init__(
+        self,
+        kind: str,
+        payload: Dict[str, Any],
+        *,
+        use_llm: bool = False,
+        llm_settings: Optional[Dict[str, str]] = None,
+        parent: Optional[QObject] = None,
+    ) -> None:
+        super().__init__(parent)
+        self.kind = kind
+        self.payload = payload or {}
+        self.use_llm = bool(use_llm)
+        self.llm_settings = llm_settings or {}
+
+    def run(self) -> None:  # noqa: N802
+        try:
+            from autotrain4.result_summarizer import (
+                summarize_eval_with_optional_llm,
+                summarize_quality_with_optional_llm,
+                summarize_train_with_optional_llm,
+            )
+
+            llm = None
+            if self.use_llm:
+                llm = self._make_llm()
+
+            kind = self.kind
+            p = self.payload
+            if kind == "quality":
+                text = summarize_quality_with_optional_llm(
+                    p.get("report") or {},
+                    use_llm=self.use_llm,
+                    llm_client=llm,
+                )
+            elif kind == "train":
+                text = summarize_train_with_optional_llm(
+                    use_llm=self.use_llm,
+                    llm_client=llm,
+                    success=bool(p.get("success")),
+                    training_completed=bool(p.get("training_completed")),
+                    elapsed_sec=p.get("elapsed_sec"),
+                    run_dir=p.get("run_dir"),
+                    exit_code=p.get("exit_code"),
+                    task_type=p.get("task_type"),
+                    extra_note=p.get("extra_note"),
+                )
+            elif kind == "eval":
+                text = summarize_eval_with_optional_llm(
+                    p.get("report"),
+                    use_llm=self.use_llm,
+                    llm_client=llm,
+                    success=bool(p.get("success", True)),
+                    report_path=p.get("report_path"),
+                    error_message=p.get("error_message"),
+                    action=p.get("action"),
+                    task_type=p.get("task_type"),
+                    elapsed_sec=p.get("elapsed_sec"),
+                )
+            else:
+                self.finished_err.emit(f"未知摘要类型: {kind}")
+                return
+
+            self.finished_ok.emit(text or "")
+        except Exception as e:
+            self.finished_err.emit(str(e))
+
+    def _make_llm(self) -> Any:
+        from autotrain4.llm import LLMClient
+
+        if self.llm_settings:
+            return LLMClient.from_settings(self.llm_settings, timeout=45)
+        return LLMClient.from_environ(timeout=45)
+
+
 class PostTrainWorker(QThread):
     """训练成功后：生成 inference report 或与 baseline 对比。"""
 
     log_received = pyqtSignal(str)
     status_changed = pyqtSignal(str, str)
-    finished_signal = pyqtSignal(bool, str)
+    # success, message(path|error), action, report_dict_or_empty
+    finished_signal = pyqtSignal(bool, str, str, object)
 
     def __init__(
         self,
@@ -384,46 +449,24 @@ class PostTrainWorker(QThread):
         self._running = True
 
     def run(self) -> None:
-        from autotrain4.evaluator import InferenceEvaluator
-        from autotrain4.inference_client import InferenceClient
-
-        start = time.time()
         self.status_changed.emit("评估中", "running")
 
         new_dvp = Path(self.context["new_dvp"])
-        image_dir = Path(self.context["dataset_dir"])
+        image_dir = Path(self.context.get("image_dir") or self.context["dataset_dir"])
         baseline = self.context.get("baseline_dvp")
-        task_type = self.context.get("task_type") or "model"
-
-        compare = self.action == "compare"
-        if compare and not baseline:
-            self.log_received.emit(
-                f"[警告] 未找到任务「{task_type}」对应的 baseline 模型"
-                f"（目录: {baseline_dir()}），已改为仅生成 inference report"
-            )
-            compare = False
-
-        run_dir = Path(self.context.get("run_dir") or PROJECT_ROOT)
-        report_name = (
-            "baseline_compare_report.json"
-            if compare
-            else "inference_report.json"
-        )
-        report_path = run_dir / report_name
+        want_compare = self.action == "compare"
 
         self.log_received.emit("========== 训练后评估 ==========")
-        self.log_received.emit(f"动作: {'与 baseline 对比' if compare else '生成 inference report'}")
+        self.log_received.emit(
+            f"动作: {'与 baseline 对比' if want_compare else '生成 inference report'}"
+        )
         self.log_received.emit(f"新模型: {new_dvp}")
         self.log_received.emit(f"测试图片: {image_dir}")
-        if compare:
+        if want_compare and baseline:
             self.log_received.emit(f"基准模型: {baseline}")
         self.log_received.emit(f"推理服务: {self.inference_url}")
 
-        if not new_dvp.exists():
-            self.log_received.emit(f"[错误] 模型文件不存在: {new_dvp}")
-            self.status_changed.emit("失败", "error")
-            self.finished_signal.emit(False, f"模型文件不存在: {new_dvp}")
-            return
+        action_name = "compare" if want_compare else "report"
 
         try:
             def _on_progress(current: int, total: int, image_name: str, model_name: str) -> None:
@@ -438,33 +481,36 @@ class PostTrainWorker(QThread):
                     f"模型={model_name}  当前={image_name}"
                 )
 
-            client = InferenceClient(base_url=self.inference_url, progress=False)
-            evaluator = InferenceEvaluator(client=client)
-            report = evaluator.evaluate(
-                new_model_path=new_dvp,
-                image_dir=image_dir,
-                baseline_model_path=baseline if compare else None,
+            result = run_post_train_action(
+                self.action,
+                self.context,
+                inference_url=self.inference_url,
+                progress=False,
                 on_progress=_on_progress,
             )
-            report.save(report_path)
+            for w in result.get("warnings") or []:
+                self.log_received.emit(f"[警告] {w}")
 
-            summary = report.to_dict().get("summary", {})
+            action_name = result.get("action") or action_name
+            report_path = result.get("report_path") or ""
+            report_dict = result.get("report") or {}
+            summary = result.get("summary") or {}
             total = summary.get("total_images", 0)
             success = summary.get("new_success_count", 0)
             failed = total - success
-            elapsed = round(time.time() - start, 2)
+            elapsed = float(result.get("elapsed_sec") or 0.0)
             avg = round(elapsed / total, 3) if total > 0 else 0.0
             self.log_received.emit(
                 f"[汇总] 总图={total} 成功={success} 失败={failed} 平均={avg}s/张"
             )
-            if compare:
+            if result.get("compare"):
                 self.log_received.emit(
                     f"[汇总] baseline成功={summary.get('baseline_success_count')} "
                     f"一致={summary.get('match_count')} 不一致={summary.get('mismatch_count')}"
                 )
             self.log_received.emit(f"[完成] 报告已保存: {report_path} （总耗时 {elapsed}s）")
             self.status_changed.emit("成功", "success")
-            self.finished_signal.emit(True, str(report_path))
+            self.finished_signal.emit(True, str(report_path), action_name, report_dict)
         except Exception as e:
             err_msg = str(e)
             self.log_received.emit(f"[错误] 训练后评估失败: {err_msg}")
@@ -474,7 +520,7 @@ class PostTrainWorker(QThread):
                     "训练平台 Backend(9887) 不能代替推理服务。"
                 )
             self.status_changed.emit("失败", "error")
-            self.finished_signal.emit(False, err_msg)
+            self.finished_signal.emit(False, err_msg, action_name, {})
 
     def stop(self) -> None:
         self._running = False

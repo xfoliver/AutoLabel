@@ -1,8 +1,19 @@
 """
-AutoTrain 4.0 共享常量与工具函数。
+AutoTrain 4.0 兼容门面 + 路径 / NL 定位工具。
 
-包含任务类型映射、模板配置文件、文件夹关键词、数据集子目录探测优先级，
-以及配置/模型路径查找等通用工具。
+**权威实现（新代码请直接 import）**
+  - ``autotrain4.task_types`` — 任务别名 / UI 码 / baseline 前缀
+  - ``autotrain4.dataset_fs`` — 数据集根 / 类别 / 图片扩展名
+  - ``autotrain4.constants`` — 默认 frontend/backend/inference URL
+
+**本模块仍拥有的实现**（路径解析、扫描根、NL 线索、latest config/dvp/baseline）
+  - ``project_root`` / ``resolve_path`` / ``normalize_scan_dirs`` / …
+  - ``extract_filesystem_paths`` / ``extract_location_clues`` / …
+  - ``find_latest_config`` / ``find_latest_dvp`` / ``find_baseline_model``
+  - ``DEFAULT_WEBBRIDGE``（``frontend_url`` 对齐 constants）
+
+对 task_types / dataset_fs / constants 的符号仅做 **re-export**，不维护第二份表。
+今年不强制全仓改 import；新代码优先直连权威模块。
 """
 
 import logging
@@ -12,87 +23,35 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Set, Union
 
+from .constants import DEFAULT_BACKEND_URL, DEFAULT_FRONTEND_URL, DEFAULT_INFERENCE_URL
+from .dataset_fs import (
+    DATASET_CANDIDATES,
+    IMAGE_EXTENSIONS,
+    detect_categories,
+    find_dataset_dir,
+    find_nested_train_subdir,
+    find_train_split_root,
+    is_image_file,
+)
+from .task_types import (
+    BASELINE_PREFIXES,
+    TASK_ALIASES,
+    TASK_FOLDER_KEYWORDS,
+    TASK_TEMPLATES,
+    TASK_UI_CODES,
+    all_alias_keys_lower,
+    from_ui_code,
+    normalize_task_type,
+    to_ui_code,
+)
+
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# 任务类型映射
-# ---------------------------------------------------------------------------
-# 用户可能说的别名 -> 内部规范任务类型
-TASK_ALIASES: Dict[str, str] = {
-    # OCR
-    "ocr": "OCR",
-    "OCR": "OCR",
-    # 分类
-    "cls": "分类",
-    "CLS": "分类",
-    "分类": "分类",
-    "classification": "分类",
-    # 目标检测
-    "det": "目标检测",
-    "DET": "目标检测",
-    "目标检测": "目标检测",
-    "detection": "目标检测",
-    # DETR（底层任务类型仍用 目标检测，但模板用 DETR 专用）
-    "detr": "DETR",
-    "DETR": "DETR",
-    # 实例分割
-    "iseg": "实例分割",
-    "ISEG": "实例分割",
-    "实例分割": "实例分割",
-    "instance": "实例分割",
-    # 语义分割
-    "sseg": "语义分割",
-    "SSEG": "语义分割",
-    "语义分割": "语义分割",
-    "semantic": "语义分割",
-    # 旋转框检测
-    "rotate": "旋转框检测",
-    "ROTATE": "旋转框检测",
-    "旋转框检测": "旋转框检测",
-    "rotation": "旋转框检测",
-}
-
-# 规范任务类型 -> 模板配置文件
-TASK_TEMPLATES: Dict[str, str] = {
-    "OCR": "config/ocr_train_automation_config.json",
-    "分类": "config/cls_train_automation_config.json",
-    "目标检测": "config/det_train_automation_config.json",
-    "DETR": "config/detr_train_automation_config.json",
-    "实例分割": "config/iseg_train_automation_config.json",
-    "语义分割": "config/sseg_train_automation_config.json",
-    "旋转框检测": "config/rotate_train_automation_config.json",
-}
-
-# 规范任务类型 -> baseline 模型文件名前缀
-BASELINE_PREFIXES: Dict[str, str] = {
-    "OCR": "OCR",
-    "分类": "CLS",
-    "目标检测": "DET",
-    "DETR": "DETR",
-    "实例分割": "ISEG",
-    "语义分割": "SSEG",
-    "旋转框检测": "ROTATE",
-}
-
-# 用于匹配文件夹名的关键字（不区分大小写）
-TASK_FOLDER_KEYWORDS: Dict[str, List[str]] = {
-    "OCR": ["ocr"],
-    "分类": ["cls", "分类", "classification"],
-    "目标检测": ["det", "目标检测", "detection"],
-    "DETR": ["detr"],
-    "实例分割": ["iseg", "实例分割", "instance"],
-    "语义分割": ["sseg", "语义分割", "semantic"],
-    "旋转框检测": ["rotate", "旋转框检测", "rotation"],
-}
-
-# 数据集子目录探测优先级
-DATASET_CANDIDATES = ["训练集", "1-训练集", "训练", "train", "dataset"]
-
-# 默认 WebBridge 配置（Playwright，推荐）
+# 默认 WebBridge 配置（Playwright，推荐）；frontend_url 与 constants 单源对齐
 DEFAULT_WEBBRIDGE = {
     "enabled": True,
     "adapter": "playwright",
-    "frontend_url": "http://localhost:8843",
+    "frontend_url": DEFAULT_FRONTEND_URL,
     "timeout": 120,
     "frontend_ready_timeout": 60,
     "frontend_ready_interval": 1,
@@ -107,9 +66,6 @@ DEFAULT_WEBBRIDGE = {
     "record_video_dir": None,
     "record_video_size": {"width": 1280, "height": 720},
 }
-
-# 图片扩展名，用于数据集类别自动检测
-IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp", ".gif"}
 
 # NL 定位：深搜时跳过的目录名（小写比较）
 NL_SKIP_DIR_NAMES = {
@@ -126,7 +82,6 @@ NL_SKIP_DIR_NAMES = {
     "输出",
     "模型输出",
 }
-
 # NL 线索提取时忽略的停用词（小写 / 原文）
 _NL_STOPWORDS = {
     "训练",
@@ -224,8 +179,7 @@ _NL_STOPWORDS = {
     "or",
 }
 # 任务别名也视为停用词，避免 iseg/cls 被当成路径片段
-_NL_STOPWORDS.update(a.lower() for a in TASK_ALIASES.keys())
-_NL_STOPWORDS.update(t.lower() for t in TASK_ALIASES.values())
+_NL_STOPWORDS.update(all_alias_keys_lower())
 
 # 有界深搜默认限制
 NL_DEFAULT_MAX_DEPTH = 4

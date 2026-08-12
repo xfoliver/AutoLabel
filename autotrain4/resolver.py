@@ -32,7 +32,9 @@ from .common import (
     normalize_scan_dirs,
     resolve_search_anchors,
 )
-from .llm_client import LLMClient
+from .dataset_fs import detect_categories as fs_detect_categories
+from .dataset_fs import find_nested_train_subdir
+from .llm import LLMClient
 from .nlu import TrainIntent
 
 logger = logging.getLogger(__name__)
@@ -794,49 +796,12 @@ class DatasetResolver:
 
     def _find_dataset_dir(self, folder: Path) -> Optional[Path]:
         """在文件夹内探测数据集子目录。"""
-        for candidate in DATASET_CANDIDATES:
-            cand_path = folder / candidate
-            if cand_path.exists() and cand_path.is_dir():
-                return cand_path
-        return None
+        return find_nested_train_subdir(folder)
 
     def _detect_categories(self, dataset_dir: Path) -> Tuple[List[str], int]:
-        """探测数据集内部类别（按子文件夹）和图片总数。
-
-        分类任务：子文件夹即类别，统计每个子文件夹内的图片。
-        OCR/检测等任务：图片可能直接放在根目录，找不到子文件夹类别时回退统计根目录图片。
-        """
-        categories: List[str] = []
-        total = 0
-        if not dataset_dir.exists():
-            return categories, total
-
-        # 1. 先按分类任务风格探测子文件夹类别
-        for subdir in dataset_dir.iterdir():
-            if not subdir.is_dir():
-                continue
-            if subdir.name.lower() in {"annotations", "labels", "image", "images", "ok", "ng"}:
-                continue
-            count = sum(
-                1
-                for f in subdir.iterdir()
-                if f.is_file() and f.suffix.lower() in IMAGE_EXTENSIONS
-            )
-            if count > 0:
-                categories.append(subdir.name)
-                total += count
-
-        # 2. 没找到分类式子文件夹时，回退统计根目录图片（OCR/检测风格）
-        if not categories:
-            root_count = sum(
-                1
-                for f in dataset_dir.iterdir()
-                if f.is_file() and f.suffix.lower() in IMAGE_EXTENSIONS
-            )
-            if root_count > 0:
-                total = root_count
-
-        return categories, total
+        """探测数据集内部类别（按子文件夹）和图片总数。"""
+        cats, total = fs_detect_categories(dataset_dir, with_counts=False)
+        return list(cats), int(total)
 
     def _score_folder(self, folder: Path, intent: TrainIntent) -> DatasetMatch:
         """对单个文件夹构造匹配结果。

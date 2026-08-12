@@ -1,16 +1,19 @@
 """
 Kimi WebBridge 适配层
 
-为 auto_train2.0.py 提供统一的浏览器自动化接口，底层可替换为：
-- HTTP API 适配器
-- WebSocket 适配器
-- 本地 SDK 适配器
-- 测试桩
+为 auto_train2.0 / autotrain_exec 提供统一的浏览器自动化接口。
+
+当前实现的 adapter：
+- ``playwright`` — Playwright Chromium（默认，推荐）
+- ``webview2_cdp`` — WebView2 远程调试 CDP
+
+历史文档中的 HTTP / WebSocket / 本地 SDK adapter **尚未实现**，
+``create_webbridge`` 仅接受 ``playwright`` 与 ``webview2_cdp``。
 
 使用：
     from kimi_webbridge import create_webbridge
     bridge = create_webbridge(config_dict)
-    bridge.navigate("http://localhost:8842")
+    bridge.navigate("http://localhost:8843")
     bridge.execute_task("点击'训练参数'菜单，设置 max_epochs=12，点击保存和开始训练")
 """
 

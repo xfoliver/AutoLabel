@@ -15,12 +15,12 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from .common import (
-    TASK_ALIASES,
     _clean_extracted_path,
     extract_filesystem_paths,
     looks_like_filesystem_path,
 )
-from .llm_client import LLMClient
+from .task_types import normalize_task_type
+from .llm import LLMClient
 
 logger = logging.getLogger(__name__)
 
@@ -376,16 +376,7 @@ class IntentParser:
 
     def _canonicalize_task_type(self, raw: str) -> str:
         """把 LLM 返回的任务类型规范化为内部标准名。"""
-        if not raw:
-            return ""
-        lower = raw.strip().lower()
-        for alias, canonical in TASK_ALIASES.items():
-            if alias.lower() == lower:
-                return canonical
-        for canonical in set(TASK_ALIASES.values()):
-            if canonical.lower() == lower:
-                return canonical
-        return ""
+        return normalize_task_type(raw)
 
     def _canonicalize_mode(self, raw: str) -> str:
         """只规范化 LLM 返回的 mode，不根据 prompt 关键词覆盖。"""

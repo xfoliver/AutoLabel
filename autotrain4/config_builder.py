@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from .common import DEFAULT_WEBBRIDGE, TASK_TEMPLATES
-from .llm_client import LLMClient
+from .llm import LLMClient
 from .nlu import TrainIntent
 from .resolver import DatasetMatch
 from .run_context import RunContext
@@ -133,10 +133,10 @@ class ConfigBuilder:
         # LLM 顾问只推荐超参。数据增强属于用户任务意图，不允许跨任务扩写。
         self._apply_llm_advice(cfg)
 
-        # 应用 DeepSeek 判断层给出的修正建议
+        # 应用判断层给出的修正建议
         if self.adjustments:
             self._apply_adjustments(cfg)
-            logger.info("已应用 DeepSeek 调整建议: %s", self.adjustments)
+            logger.info("已应用 LLM 调整建议: %s", self.adjustments)
 
         return cfg
 

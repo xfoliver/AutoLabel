@@ -20,9 +20,15 @@ import time
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional, Set, Tuple
 
+from autotrain4.task_types import TASK_UI_CODES, ui_suggestion_aliases
+
 
 def _has_env_key() -> bool:
-    return bool(os.environ.get("DEEPSEEK_API_KEY") or os.environ.get("OPENAI_API_KEY"))
+    return bool(
+        os.environ.get("AUTOTRAIN_LLM_API_KEY")
+        or os.environ.get("DEEPSEEK_API_KEY")
+        or os.environ.get("OPENAI_API_KEY")
+    )
 
 
 @dataclass
@@ -56,16 +62,9 @@ class SmartSuggestionEngine:
         on_llm_result(callback)
     """
 
-    TASK_TYPES = ["OCR", "CLS", "DET", "DETR", "ISEG", "SSEG", "ROTATE"]
-    TASK_ALIASES: Dict[str, List[str]] = {
-        "OCR": ["ocr", "文字识别", "文本识别"],
-        "CLS": ["cls", "分类", "classify", "classifier"],
-        "DET": ["det", "目标检测", "检测"],
-        "DETR": ["detr"],
-        "ISEG": ["iseg", "实例分割"],
-        "SSEG": ["sseg", "语义分割"],
-        "ROTATE": ["rotate", "旋转框", "旋转检测"],
-    }
+    TASK_TYPES = list(TASK_UI_CODES.values())
+    # 单源：由 autotrain4.task_types 生成，禁止第二份手写表
+    TASK_ALIASES: Dict[str, List[str]] = ui_suggestion_aliases()
 
     AUGMENTATIONS: List[Tuple[str, List[str]]] = [
         ("启用随机固定角度旋转", ["旋转", "随机旋转"]),
