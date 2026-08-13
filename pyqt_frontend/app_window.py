@@ -34,12 +34,14 @@ from backend import (
 )
 from data_quality_panel import DataQualityPanel
 from dialogs.post_train import PostTrainDialog
+from dialogs.submission_history import SubmissionHistoryDialog
 from dialogs.templates import (
     ClickableFrame,
     QuickTemplatesDialog,
     SaveTemplateDialog,
 )
 from llm_settings_dialog import SettingsDialog
+import submission_history as submission_history_store
 from suggestions import SmartSuggestionEngine as SuggestionEngine
 from widgets.log_panel import CollapsibleLogPanel
 from widgets.ui_scale import UIScale
@@ -48,7 +50,7 @@ from widgets.ui_scale import UIScale
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("AutoTrain 4.0")
+        self.setWindowTitle("DLCV AI Automation")
         self.setMinimumSize(780, 600)
         self.resize(UIScale.REF_W, UIScale.REF_H)
         self.worker: Optional[TrainWorker] = None
@@ -58,6 +60,8 @@ class MainWindow(QMainWindow):
         self._last_compact = False
         self._last_post_train_action: str = "report"
         self._last_task_type_hint: str = ""
+        # 当前提交在 record/submission_history.json 中的 id（训练结束时回写）
+        self._current_submission_id: str = ""
         # 子进程若已通过 CHAT_RESPONSE 写过助手框，训练收尾摘要改为追加
         self._chat_from_subprocess: bool = False
 
@@ -284,24 +288,19 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(18, 24, 18, 24)
         self._sidebar_layout = layout
 
-        # 品牌
+        # 品牌：AI 徽标 + DLCV AI Automation（与应用图标蓝粉渐变一致）
         brand = QHBoxLayout()
-        brand_mark = QLabel("AT")
+        brand_mark = QLabel("AI")
         brand_mark.setObjectName("brandMark")
         brand_mark.setAlignment(Qt.AlignCenter)
         brand_mark.setFixedSize(38, 38)
         self._brand_mark = brand_mark
         brand.addWidget(brand_mark)
 
-        brand_text = QVBoxLayout()
-        brand_title = QLabel("AutoTrain 4.0")
+        brand_title = QLabel("DLCV AI Automation")
         brand_title.setObjectName("brandTitle")
-        brand_sub = QLabel("DLCV AI Automation")
-        brand_sub.setObjectName("brandSub")
-        brand_text.addWidget(brand_title)
-        brand_text.addWidget(brand_sub)
-        brand.addLayout(brand_text)
-        brand.addStretch()
+        brand_title.setWordWrap(True)
+        brand.addWidget(brand_title, 1)
         layout.addLayout(brand)
 
         # 导航
@@ -310,6 +309,7 @@ class MainWindow(QMainWindow):
         self._nav_layout = nav
         nav_items = [
             ("⌂", "工作台", True, None),
+            ("◷", "提交历史", False, self._open_submission_history),
             ("⚙", "系统设置", False, self._open_settings),
         ]
         for icon, name, active, handler in nav_items:
@@ -956,6 +956,18 @@ class MainWindow(QMainWindow):
         if self._summary_worker and self._summary_worker.isRunning():
             self._summary_worker.wait(200)
 
+        # 先从当前 prompt 解析指标，再写入提交历史
+        self._update_metrics_from_prompt()
+        self._current_submission_id = ""
+        try:
+            entry = submission_history_store.add_submission(
+                prompt,
+                task_type_hint=self._current_task_type_hint(),
+            )
+            self._current_submission_id = str(entry.get("id") or "")
+        except Exception as exc:
+            self._append_log(f"[历史] 记录提交失败（不影响训练）: {exc}")
+
         self.worker = TrainWorker(prompt, self._settings, self)
         self.worker.log_received.connect(self._append_log)
         self.worker.chat_response.connect(self._show_chat_response)
@@ -965,8 +977,6 @@ class MainWindow(QMainWindow):
         self.worker.process_started.connect(self._enable_close_browser)
         self.worker.start()
 
-        # 先把指标从当前 prompt 里解析出来，再清空输入框
-        self._update_metrics_from_prompt()
         self.prompt_input.clear()
         self.prompt_input.setFocus()
 
@@ -1052,6 +1062,64 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
         return self._last_task_type_hint or ""
+
+    def _finalize_submission_history(
+        self,
+        *,
+        code: int,
+        elapsed: float,
+        training_completed: bool,
+        run_dir: str,
+    ) -> None:
+        """训练结束后回写 submission_history.json。"""
+        entry_id = self._current_submission_id
+        if not entry_id:
+            return
+        status = "done" if code == 0 else "error"
+        error_summary = ""
+        if code != 0:
+            error_summary = f"退出码 {code}"
+        try:
+            submission_history_store.update_submission(
+                entry_id,
+                status=status,
+                exit_code=code,
+                elapsed_s=elapsed,
+                run_dir=run_dir or "",
+                training_completed=bool(training_completed),
+                task_type_hint=self._current_task_type_hint(),
+                error_summary=error_summary,
+            )
+        except Exception as exc:
+            self._append_log(f"[历史] 更新提交记录失败: {exc}")
+        finally:
+            self._current_submission_id = ""
+
+    def _refill_prompt_from_history(self, prompt: str) -> None:
+        """从历史回填到输入框（不自动提交）。"""
+        text = (prompt or "").strip()
+        if not text:
+            return
+        self.prompt_input.setPlainText(text)
+        cursor = self.prompt_input.textCursor()
+        cursor.movePosition(cursor.End)
+        self.prompt_input.setTextCursor(cursor)
+        self.prompt_input.setFocus()
+        self._update_metrics_from_prompt()
+
+    def _resubmit_from_history(self, prompt: str) -> None:
+        """回填历史 prompt 并立即提交。"""
+        text = (prompt or "").strip()
+        if not text:
+            return
+        self._refill_prompt_from_history(text)
+        self._start_run()
+
+    def _open_submission_history(self) -> None:
+        dialog = SubmissionHistoryDialog(parent=self)
+        dialog.refill_requested.connect(self._refill_prompt_from_history)
+        dialog.resubmit_requested.connect(self._resubmit_from_history)
+        dialog.exec_()
 
     def _show_chat_response(self, answer: str, *, from_subprocess: bool = True) -> None:
         """显示助手回复；子进程 CHAT_RESPONSE 会覆盖当前内容。"""
@@ -1202,11 +1270,19 @@ class MainWindow(QMainWindow):
         lbl.setObjectName(obj_name)
         lbl.style().unpolish(lbl)
         lbl.style().polish(lbl)
+        if hasattr(self, "log_panel"):
+            self.log_panel.set_running(style_class == "running")
 
     def _on_train_finished(
         self, code: int, elapsed: float, training_completed: bool = False, run_dir: str = ""
     ) -> None:
         self.close_browser_btn.setEnabled(False)
+        self._finalize_submission_history(
+            code=code,
+            elapsed=elapsed,
+            training_completed=training_completed,
+            run_dir=run_dir or "",
+        )
 
         if code != 0:
             self.start_btn.setEnabled(True)

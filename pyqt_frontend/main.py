@@ -20,7 +20,7 @@ import sys
 from pathlib import Path
 
 from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QFont
+from PyQt5.QtGui import QFont, QIcon
 from PyQt5.QtWidgets import QApplication
 
 # 保证以脚本方式启动时，pyqt_frontend/ 在 sys.path 中
@@ -30,6 +30,9 @@ if str(_FRONTEND_DIR) not in sys.path:
 
 from app_window import MainWindow  # noqa: E402
 
+# 与桌面「深度视觉 AI 平台」一致的应用图标
+_APP_ICON = _FRONTEND_DIR / "assets" / "app.ico"
+
 
 def main() -> None:
     app = QApplication(sys.argv)
@@ -37,7 +40,15 @@ def main() -> None:
     font = QFont("Microsoft YaHei", 12)
     app.setFont(font)
 
+    if _APP_ICON.is_file():
+        icon = QIcon(str(_APP_ICON))
+        app.setWindowIcon(icon)
+    else:
+        icon = QIcon()
+
     window = MainWindow()
+    if not icon.isNull():
+        window.setWindowIcon(icon)
     # 只有主窗口关闭才退出应用；设置等子对话框已设 WA_QuitOnClose=False
     window.setAttribute(Qt.WA_QuitOnClose, True)
     window.show()

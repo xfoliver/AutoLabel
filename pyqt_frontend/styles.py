@@ -34,21 +34,16 @@ def build_main_stylesheet(scale: UIScale) -> str:
             }}
             QLabel#brandMark {{
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                    stop:0 #6c5ce7, stop:1 #a879ff);
+                    stop:0 #3b82f6, stop:0.55 #a855f7, stop:1 #ec4899);
                 color: white;
                 font-weight: 800;
-                font-size: {f(15)}px;
+                font-size: {f(13)}px;
                 border-radius: {p(12, 8)};
             }}
             QLabel#brandTitle {{
-                font-size: {f(17)}px;
+                font-size: {f(15)}px;
                 font-weight: bold;
                 color: #192033;
-            }}
-            QLabel#brandSub {{
-                font-size: {f(12)}px;
-                color: #7b8499;
-                margin-top: {p(2, 0)};
             }}
             QPushButton#navBtn, QPushButton#navBtnActive {{
                 border: none;
@@ -240,7 +235,7 @@ def build_main_stylesheet(scale: UIScale) -> str:
                 color: #192033;
             }}
 
-            /* 日志 */
+            /* 日志 / 执行控制台 */
             QLabel#statusBadge {{
                 font-size: {f(12)}px;
                 font-weight: bold;
@@ -274,22 +269,23 @@ def build_main_stylesheet(scale: UIScale) -> str:
                 padding: {p(5, 3)} {p(10, 6)};
             }}
             QWidget#logPanel {{
-                background: transparent;
-                border: 1px solid #dde2ec;
+                background: #fbfcff;
+                border: 1px solid #e5e8f0;
                 border-radius: {p(16, 10)};
             }}
             QFrame#logStageRail {{
                 background: #f7f8fc;
                 border: none;
+                border-right: 1px solid #e8ebf2;
                 border-top-left-radius: {p(15, 10)};
                 border-bottom-left-radius: {p(15, 10)};
             }}
             QLabel#logRailTitle {{
-                color: #929bad;
+                color: #6c5ce7;
                 font-size: {f(10)}px;
                 font-weight: 800;
-                letter-spacing: 1px;
-                padding: {p(2, 1)} {p(5, 3)} {p(6, 3)} {p(5, 3)};
+                letter-spacing: 1.2px;
+                padding: {p(2, 1)} {p(5, 3)} {p(8, 4)} {p(5, 3)};
             }}
             QWidget#logStageHost,
             QScrollArea#logStageScroll,
@@ -304,82 +300,131 @@ def build_main_stylesheet(scale: UIScale) -> str:
                 font-size: {f(11)}px;
                 font-weight: 600;
                 border: none;
-                border-radius: {p(9, 6)};
-                padding: {p(9, 5)} {p(8, 4)};
+                border-radius: {p(10, 6)};
+                padding: {p(9, 5)} {p(10, 6)};
                 text-align: left;
             }}
             QPushButton#logStageNav:hover {{
-                background: #eff1f7;
+                background: #ffffff;
                 color: #414b5f;
+                border: 1px solid #e8ebf2;
             }}
             QPushButton#logStageNavActive {{
-                background: #ebe8ff;
+                background: #ffffff;
                 color: #6655d9;
                 font-weight: 800;
+                border: 1px solid #e0dbff;
             }}
             QFrame#logConsole {{
-                background: #0d1423;
+                background: #ffffff;
                 border: none;
                 border-top-right-radius: {p(15, 10)};
                 border-bottom-right-radius: {p(15, 10)};
             }}
             QFrame#logConsoleToolbar {{
-                background: #151e2f;
+                background: #fafbfe;
                 border: none;
-                border-bottom: 1px solid #222d42;
+                border-bottom: 1px solid #e8ebf2;
                 border-top-right-radius: {p(15, 10)};
             }}
-            QLabel#consoleDotRed,
-            QLabel#consoleDotAmber,
-            QLabel#consoleDotGreen {{
-                border-radius: {p(4, 2)};
-                background: #ff6b72;
-            }}
-            QLabel#consoleDotAmber {{
-                background: #f2bd55;
-            }}
-            QLabel#consoleDotGreen {{
-                background: #38c98d;
+            QLabel#logConsoleEyebrow {{
+                color: #6c5ce7;
+                font-size: {f(9)}px;
+                font-weight: 800;
+                letter-spacing: 1.2px;
             }}
             QLabel#logConsoleTitle {{
-                color: #8390a5;
-                font-size: {f(10)}px;
+                color: #192033;
+                font-size: {f(13)}px;
+                font-weight: 800;
+            }}
+            QFrame#logFilterGroup {{
+                background: #eef0f6;
+                border: none;
+                border-radius: {p(9, 6)};
+            }}
+            QPushButton#logFilterBtn,
+            QPushButton#logFilterBtnActive {{
+                background: transparent;
+                color: #6b7280;
+                border: none;
+                border-radius: {p(7, 4)};
+                padding: {p(5, 3)} {p(10, 6)};
+                font-size: {f(11)}px;
                 font-weight: 700;
-                letter-spacing: 1px;
+            }}
+            QPushButton#logFilterBtn:hover {{
+                color: #414b5f;
+                background: rgba(255, 255, 255, 0.65);
+            }}
+            QPushButton#logFilterBtnActive {{
+                background: #ffffff;
+                color: #6655d9;
             }}
             QLabel#logConsoleLive {{
-                color: #4dd4a1;
-                background: #122d2a;
-                border: 1px solid #1e473e;
-                border-radius: {p(8, 4)};
-                padding: {p(3, 2)} {p(7, 4)};
-                font-size: {f(9)}px;
+                color: #1fa971;
+                background: #e9f8f2;
+                border: 1px solid #ccecdf;
+                border-radius: 999px;
+                padding: {p(4, 2)} {p(10, 6)};
+                font-size: {f(10)}px;
+                font-weight: 800;
+            }}
+            QLabel#logConsoleLiveIdle {{
+                color: #7b8499;
+                background: #eef0f6;
+                border: 1px solid #e5e8f0;
+                border-radius: 999px;
+                padding: {p(4, 2)} {p(10, 6)};
+                font-size: {f(10)}px;
                 font-weight: 800;
             }}
             QPlainTextEdit#logConsoleOutput {{
-                background: #0d1423;
+                background: #ffffff;
                 border: none;
-                border-bottom-right-radius: {p(15, 10)};
-                padding: {p(14, 8)} {p(16, 10)};
-                font-family: "Consolas", "SFMono-Regular", monospace;
+                padding: {p(12, 8)} {p(14, 10)};
+                font-family: "Cascadia Code", "Consolas", "SFMono-Regular", monospace;
                 font-size: {f(12)}px;
-                color: #c7d0df;
-                selection-background-color: #6655d9;
-                selection-color: #ffffff;
+                color: #4a5568;
+                selection-background-color: #ebe8ff;
+                selection-color: #3b2fa0;
             }}
             QPlainTextEdit#logConsoleOutput QScrollBar:vertical {{
-                background: #0d1423;
+                background: transparent;
                 width: {p(10, 6)};
                 margin: {p(4, 2)} {p(2, 1)} {p(4, 2)} 0;
             }}
             QPlainTextEdit#logConsoleOutput QScrollBar::handle:vertical {{
-                background: #344057;
+                background: #d5dae8;
                 border-radius: {p(4, 2)};
                 min-height: {p(28, 16)};
+            }}
+            QPlainTextEdit#logConsoleOutput QScrollBar::handle:vertical:hover {{
+                background: #b8c0d4;
             }}
             QPlainTextEdit#logConsoleOutput QScrollBar::add-line:vertical,
             QPlainTextEdit#logConsoleOutput QScrollBar::sub-line:vertical {{
                 height: 0;
+            }}
+            QFrame#logConsoleFooter {{
+                background: #fafbfe;
+                border: none;
+                border-top: 1px solid #e8ebf2;
+                border-bottom-right-radius: {p(15, 10)};
+            }}
+            QLabel#logConsoleFooterText {{
+                color: #8b93a7;
+                font-size: {f(10)}px;
+                font-weight: 600;
+                font-family: "Cascadia Code", "Consolas", monospace;
+            }}
+            QLabel#logStreamDot {{
+                background: #c5cad6;
+                border-radius: {p(3, 2)};
+            }}
+            QLabel#logStreamDotOn {{
+                background: #1fa971;
+                border-radius: {p(3, 2)};
             }}
 
             /* 快捷模板 */
@@ -418,6 +463,70 @@ def build_main_stylesheet(scale: UIScale) -> str:
             QPushButton#closeBrowserBtn:hover:!disabled {{
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
                     stop:0 #5b4cdb, stop:1 #7c6cf0);
+            }}
+
+            /* 提交历史 */
+            QFrame#historyItem {{
+                background: #f8f9fc;
+                border: 1px solid #e8ebf2;
+                border-radius: {p(12, 8)};
+            }}
+            QFrame#historyItem:hover {{
+                border: 1px solid #d6cdff;
+                background: #faf9ff;
+            }}
+            QLabel#historyPrompt {{
+                font-size: {f(13)}px;
+                color: #192033;
+                font-weight: 600;
+            }}
+            QLabel#historyMeta {{
+                font-size: {f(11)}px;
+                color: #7b8499;
+            }}
+            QLabel#historyError {{
+                font-size: {f(11)}px;
+                color: #db5a65;
+            }}
+            QLabel#historyEmpty {{
+                font-size: {f(13)}px;
+                color: #7b8499;
+                padding: {p(16, 10)};
+            }}
+            QLabel#historyStatusRunning {{
+                font-size: {f(11)}px;
+                font-weight: bold;
+                color: #6c5ce7;
+                background: #eeeaff;
+                border-radius: 999px;
+                padding: {p(3, 2)} {p(8, 5)};
+            }}
+            QLabel#historyStatusDone {{
+                font-size: {f(11)}px;
+                font-weight: bold;
+                color: #1fa971;
+                background: #e9f8f2;
+                border-radius: 999px;
+                padding: {p(3, 2)} {p(8, 5)};
+            }}
+            QLabel#historyStatusError {{
+                font-size: {f(11)}px;
+                font-weight: bold;
+                color: #db5a65;
+                background: #fdecee;
+                border-radius: 999px;
+                padding: {p(3, 2)} {p(8, 5)};
+            }}
+            QPushButton#tinyDangerBtn {{
+                background: #fdecee;
+                color: #db5a65;
+                border: none;
+                border-radius: {p(10, 6)};
+                padding: {p(6, 4)} {p(10, 6)};
+                font-size: {f(12)}px;
+            }}
+            QPushButton#tinyDangerBtn:hover {{
+                background: #f8d7da;
             }}
 """
 

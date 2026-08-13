@@ -9,10 +9,9 @@ const app = useAppStore()
 <template>
   <aside class="sidebar">
     <div class="brand">
-      <div class="brand-mark"><span>AT</span></div>
+      <div class="brand-mark"><span>AI</span></div>
       <div class="brand-copy">
-        <strong>AutoTrain</strong>
-        <small>VISION OPS · 4.0</small>
+        <strong>DLCV AI Automation</strong>
       </div>
     </div>
 
@@ -91,15 +90,14 @@ const app = useAppStore()
   place-items: center;
   border: 1px solid rgba(255, 255, 255, 0.16);
   border-radius: 12px;
-  background: linear-gradient(145deg, #7769f1, #5144c7);
-  box-shadow: 0 10px 28px rgba(94, 76, 223, 0.35);
+  background: linear-gradient(145deg, #3b82f6, #a855f7 55%, #ec4899);
+  box-shadow: 0 10px 28px rgba(59, 130, 246, 0.35);
   color: #fff;
   font-size: 12px;
   font-weight: 850;
 }
 
-.brand-copy strong { display: block; color: #fff; font-size: 15px; }
-.brand-copy small { display: block; margin-top: 3px; color: #727d98; font-size: 8px; letter-spacing: 0.12em; }
+.brand-copy strong { display: block; color: #fff; font-size: 13px; line-height: 1.25; }
 
 .workspace-label {
   padding: 0 11px 9px;
