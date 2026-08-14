@@ -72,27 +72,31 @@ kimi_gui_automation/
 │   ├── bootstrap.py              # dotenv + Windows UTF-8（4.0/2.0 共用）
 │   ├── orchestrator.py           # AutoTrain4Orchestrator（多任务 / locate / test / chat）
 │   ├── task_types.py / dataset_fs.py / constants.py / post_train.py
+│   ├── data_quality.py           # 训练集质检规则引擎（供 PyQt 面板调用）
 │   ├── common.py / nlu.py / resolver.py / judge.py / config_builder.py
 │   ├── llm/ + llm_client.py（shim）
 │   ├── inference_client.py / evaluator.py / run_context.py / output_protocol.py
 │   └── …
 ├── autotrain_exec/               # 2.0 执行内核（原 auto_train2.0 拆包）
-│   ├── trainer.py                # DLCVAutoTrainer 骨架
+│   ├── trainer.py                # DLCVAutoTrainer 骨架（含 WebView2 启动 env）
 │   ├── config.py / dva.py / platform.py / backend_api.py
 │   ├── monitor.py / webbridge_runner.py / cli.py
 │   └── errors.py
 ├── kimi_webbridge/               # Playwright / WebView2 CDP 适配器
 ├── config/                       # 任务模板 + 运行时 auto_latest_*.json
 ├── pyqt_frontend/                # PyQt5 桌面工作台
+│   ├── main.py / app_window.py / styles.py / backend.py
+│   ├── data_quality_panel.py     # 数据质检面板
+│   ├── submission_history.py     # 提交历史 JSON ledger
+│   ├── dialogs/                  # 模板 / post-train / 文档 / 提交历史
+│   └── widgets/                  # UIScale、日志面板
 ├── web_frontend/                 # Vue 3 + Vite + Flask Web 控制台
-├── check_dataset.py              # 数据质检 CLI（保留）
-├── check_dataset_ui.py           # tkinter 质检 GUI（已弃用）
 ├── requirements.txt              # 核心 Python 依赖
-├── tests/                        # 回归测试（多任务 / NL 定位 / locate / mode / 产物策略）
+├── tests/                        # 回归测试（见下方「测试」）
 ├── docs/architecture.md          # 源码地图（权威入口）
 ├── AI训练平台测试/               # 默认数据集扫描根（本地数据，勿提交）
 ├── Baseline Models/              # 可选 Baseline .dvp（勿直接提交）
-├── record/                       # 对话历史、录屏等运行数据
+├── record/                       # 对话历史、提交历史、录屏等运行数据
 ├── failed_runs/                  # run 创建前的早期失败记录
 └── README.md                     # 本文档（PyQt「查看文档」也会读它）
 ```
@@ -102,6 +106,7 @@ kimi_gui_automation/
 - **源码地图（入口 / 库 / 废弃）**：见 [`docs/architecture.md`](docs/architecture.md)
 - **历史快照**：`archive/dlcv-auto-train-202608/`（勿改、勿 import；原根目录 `dlcv-auto-train/` 已移入 archive）
 - **本地密钥**：`pyqt_frontend/settings.json` 已 gitignore；从 `pyqt_frontend/settings.example.json` 复制后填写
+- **已移除**：根目录 `check_dataset.py` / `check_dataset_ui.py`（tkinter）；质检请用 PyQt 面板或直接 `import autotrain4.data_quality`
 
 ---
 
@@ -132,11 +137,11 @@ python -m pip install -r pyqt_frontend/requirements.txt
 python -m pip install -r web_frontend/requirements.txt
 ```
 
-数据质检：
+数据质检（规则引擎，不依赖 LLM）：
 
-- CLI：`python check_dataset.py --folder <dir> --task cls`
-- PyQt 工作台内「数据质检」面板（推荐）
-- `check_dataset_ui.py`（tkinter）已弃用，仅兼容保留
+- **推荐**：PyQt 工作台内「数据质检」面板（`pyqt_frontend/data_quality_panel.py`）
+- 库入口：`autotrain4.data_quality.check_dataset(folder, task, …)`
+- 根目录独立 CLI / tkinter GUI（`check_dataset.py` / `check_dataset_ui.py`）**已移除**
 
 ---
 
@@ -469,10 +474,13 @@ python pyqt_frontend/main.py
 
 - 自然语言输入与建议、快捷模板
 - 分阶段日志与任务状态、训练后报告/对比
-- 设置：DLCV 地址、EXE、Adapter、CDP、LLM
+- **数据质检**面板（调用 `autotrain4.data_quality`）
+- **提交历史**：侧栏入口；落盘 `record/submission_history.json`，训练结束回写状态
+- 设置：DLCV 地址、EXE、Adapter、CDP、LLM（含协议 `openai` / `anthropic` / `auto`）
 - 「查看文档」读取根目录 `README.md`
 
-本地设置：`pyqt_frontend/settings.json`（可能含 Key，勿提交）。
+本地设置：`pyqt_frontend/settings.json`（可能含 Key，勿提交）。  
+实现拆分见 `docs/architecture.md`（`app_window` / `styles` / `dialogs` / `widgets`）。
 
 ---
 
@@ -548,22 +556,32 @@ npm run dev
 | `autotrain4/judge.py` | adjustments（mode 以 NLU 为准） |
 | `autotrain4/config_builder.py` | 模板 → 最终 JSON |
 | `autotrain4/post_train.py` | 训练后上下文 + report/compare（CLI/UI 共用） |
+| `autotrain4/data_quality.py` | 训练集质检规则引擎（分类目录 / 图 JSON 配对等） |
 | `autotrain4/llm/` | chat / extract_intent / select_dataset（`llm_client` 为 shim） |
 | `auto_train2.0.py` | 薄 CLI 入口 → `autotrain_exec` |
 | `autotrain_exec/` | 启平台、DVA、API、WebBridge 点选、监控训练 |
+| `autotrain_exec/trainer.py` | 骨架；**WebView2 启动 env 禁止注入 `--disable-gpu`**（见 FAQ） |
+| `pyqt_frontend/submission_history.py` | 提交历史持久化（UI 侧栏） |
+
+改某能力该动哪个文件：优先查 [`docs/architecture.md`](docs/architecture.md)「改哪里」表。
 
 ---
 
 ## 测试
 
 ```powershell
+# 全量
+python -m unittest discover -s tests -v
+
+# 单文件示例
 python -m unittest tests.test_multitask_regressions -v
+python -m unittest tests.test_webview2_launch_env -v
 ```
 
 当前覆盖包括：
 
 - 多任务中间/末任务传给 2.0 的参数策略
-- 多行 Unicode 助手回复协议
+- 多行 Unicode 助手回复协议（`[CHAT_RESPONSE_JSON]`）
 - 数据增强按任务隔离；Judge 只收当前任务上下文
 - 显式路径、多根浅扫、folder 跨根
 - NL 线索提取、锚点、嵌套发现、噪声过滤、work/深度限制
@@ -572,39 +590,36 @@ python -m unittest tests.test_multitask_regressions -v
 - `--output-dir` 归档位置
 - 成功/失败产物清理策略；「成功但无 dvp」按失败保留
 - 训练 API 防重复启动
+- orchestrator mode / dry-run / generate-config-only 短路（`test_orchestrator_mode`）
+- post-train 上下文与动作（`test_post_train`）
+- LLM 协议适配（`test_llm_client_protocol`）
+- 任务类型 / 数据集 FS 单源（`test_task_types_dataset_fs`）
+- 提交历史读写（`test_submission_history`）
+- 结果摘要（`test_result_summarizer`）
+- **WebView2 启动 env 不含 `--disable-gpu`**；OCR 模板 `auto_deploy=false`（`test_webview2_launch_env`）
 
 ---
 
 ## GitHub 提交建议
 
-至少排除：
+根目录 `.gitignore` 已忽略 `.env`、`settings.json`、`record/`、`AI训练平台测试/`、`Baseline Models/`、`archive/`、`node_modules` 等。  
+**仍建议**在本地或后续补全忽略（若尚未写入 `.gitignore`）：
 
 ```gitignore
-.env
-**/settings.json
-**/__pycache__/
-*.py[cod]
-*.log
-.idea/
-.vscode/
-.ruff_cache/
-
-record/
-failed_runs/
-webbridge_screenshots/
-web_frontend/node_modules/
-web_frontend/dist/
-
+# 运行时配置与产物（常含本机绝对路径）
 config/auto_latest_*.json
 config/auto_*-20*.json
-Baseline Models/
-AI训练平台测试/
 *.dva
 *.dvp
 *.mp4
+*.log
+
+failed_runs/
+webbridge_screenshots/
+web_frontend/dist/
 ```
 
-保留基础任务模板并清掉本机绝对路径。大模型请用 Git LFS，并确认分发权限。
+保留基础任务模板（`*_train_automation_config.json`）并清掉本机绝对路径后再提交。大模型请用 Git LFS，并确认分发权限。
 
 ---
 
@@ -626,10 +641,20 @@ AI训练平台测试/
 
 使用「定位 / 查找 / 在哪」等表述，且不要带「训练/开训」。日志中 `mode` 应为 `locate`。
 
+### OCR（或其它 CUDA 任务）自动训练在约 1% 崩溃，退出码 3221226505
+
+症状：`训练进程异常退出，退出码 3221226505`（`0xC0000409`）；同一数据集**手动**开 DVA/项目训练正常。
+
+原因：旧版在启动 WebView2 壳端时写入  
+`WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=... --disable-gpu --disable-software-rasterizer`。  
+该环境变量会随 Platform → Backend → **训练子进程**继承，污染 CUDA 上下文。
+
+当前行为：`autotrain_exec/trainer.py` 的 `_build_webview2_launch_env` **只保留 CDP 相关参数**，并剥离禁用 GPU 的 flag。修改后请先结束残留的 `DLCV AI Training Platform` / `Backend` 再重试。OCR 模板默认 `auto_deploy: false`，与常见手工成功任务一致。
+
 ### WebBridge 无法连接
 
 - Playwright：前端地址可达，`python -m playwright install chromium`
-- WebView2：EXE 正确、CDP 端口空闲、`--adapter webview2_cdp`
+- WebView2：EXE 正确、CDP 端口空闲、`--adapter webview2_cdp`；**不要**自行给壳端加 `--disable-gpu`（见上条）
 - 双路径失败时看 run 内 `exception.json`、截图、录屏
 
 ### Web 页面空白
@@ -643,6 +668,17 @@ AI训练平台测试/
 ### 训练成功但 work 中无 `.dvp`
 
 不会当作有效成功，会保留失败诊断。检查 `exception.json`、`train.log`、`stderr.log` 与最后检查点。
+
+### 数据质检 CLI 找不到了
+
+根目录 `check_dataset.py` / `check_dataset_ui.py` 已移除。请用：
+
+```powershell
+python pyqt_frontend/main.py
+# 打开「数据质检」面板
+```
+
+或在代码中调用 `autotrain4.data_quality.check_dataset(...)`。
 
 ---
 
