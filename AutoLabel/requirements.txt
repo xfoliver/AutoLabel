@@ -1,0 +1,12 @@
+# AutoLabel MVP dependencies
+PyQt5>=5.15.0
+numpy>=1.23.0
+opencv-python>=4.8.0
+Pillow>=9.0.0
+requests>=2.28.0
+openai>=1.0.0
+python-dotenv>=1.0.0
+tqdm>=4.64.0
+
+# Dev
+pytest>=7.0.0

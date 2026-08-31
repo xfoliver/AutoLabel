@@ -1,0 +1,49 @@
+{
+  "version": "2026.7.1.0",
+  "flags": {},
+  "shapes": [
+    {
+      "label": "螺丝",
+      "points": [
+        [
+          132.4644208635603,
+          164.89891052246097
+        ],
+        [
+          200.21805245535717,
+          227.46150207519534
+        ]
+      ],
+      "group_id": null,
+      "description": null,
+      "shape_type": "rectangle",
+      "flags": {},
+      "mask": null
+    },
+    {
+      "label": "螺丝",
+      "points": [
+        [
+          149.62423706054688,
+          262.80596923828125
+        ],
+        [
+          219.18975830078125,
+          366.69635009765625
+        ]
+      ],
+      "group_id": null,
+      "description": null,
+      "shape_type": "rectangle",
+      "flags": {},
+      "mask": null
+    }
+  ],
+  "imagePath": "69255_513_170.jpg",
+  "imageData": null,
+  "imageHeight": 427,
+  "imageWidth": 323,
+  "img_name_list": [
+    "69255_513_170.jpg"
+  ]
+}
