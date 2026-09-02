@@ -1,0 +1,20 @@
+{
+  "original_size": [
+    480,
+    640
+  ],
+  "model_input_size": [
+    480,
+    640
+  ],
+  "mask_size": [
+    480,
+    640
+  ],
+  "mask_to_input": {
+    "mode": "identity"
+  },
+  "input_to_original": {
+    "mode": "identity"
+  }
+}

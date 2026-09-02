@@ -1,0 +1,33 @@
+{
+  "action": "auto_label",
+  "annotation_task": "实例分割",
+  "object_granularity": "instance",
+  "targets": [
+    {
+      "label": "手机",
+      "description": "图片中的手机，逐台实例分割；包括各种颜色、角度的实体手机。",
+      "include": [],
+      "exclude": [
+        "平板电脑",
+        "仅出现在海报/屏幕里的手机图案"
+      ],
+      "model_prompt": "phone"
+    }
+  ],
+  "dataset_path": "C:/Users/Admin/kimi_gui_automation/AutoLabel/数据集测试/作弊",
+  "dataset_clues": {
+    "drive": "Z:",
+    "path_fragments": [],
+    "dataset_name": null
+  },
+  "references": {
+    "positive": [],
+    "negative": []
+  },
+  "instance_policy": "separate_each_object",
+  "review_policy": "low_confidence_only",
+  "overwrite_policy": "skip_existing",
+  "output_format": "labelmeai",
+  "backend_preference": "auto",
+  "preview_count": 5
+}

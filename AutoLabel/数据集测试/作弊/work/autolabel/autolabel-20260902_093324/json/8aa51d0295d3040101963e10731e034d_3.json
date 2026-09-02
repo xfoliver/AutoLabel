@@ -1,0 +1,77 @@
+{
+  "version": "2025.9.1.0",
+  "flags": {},
+  "shapes": [
+    {
+      "label": "手机",
+      "points": [
+        [
+          251.0,
+          310.0
+        ],
+        [
+          244.0,
+          310.0
+        ],
+        [
+          242.0,
+          312.0
+        ],
+        [
+          241.0,
+          316.0
+        ],
+        [
+          237.0,
+          324.0
+        ],
+        [
+          237.0,
+          330.0
+        ],
+        [
+          239.0,
+          332.0
+        ],
+        [
+          244.0,
+          332.0
+        ],
+        [
+          246.0,
+          330.0
+        ],
+        [
+          247.0,
+          323.0
+        ],
+        [
+          249.0,
+          320.0
+        ],
+        [
+          249.0,
+          317.0
+        ],
+        [
+          251.0,
+          314.0
+        ]
+      ],
+      "group_id": null,
+      "description": null,
+      "shape_type": "polygon",
+      "flags": {
+        "autolabel": true,
+        "quality_risk": 0.0,
+        "score_source": "none",
+        "instance_source": "model"
+      },
+      "mask": null
+    }
+  ],
+  "imagePath": "8aa51d0295d3040101963e10731e034d_3.jpg",
+  "imageData": null,
+  "imageHeight": 640,
+  "imageWidth": 480
+}

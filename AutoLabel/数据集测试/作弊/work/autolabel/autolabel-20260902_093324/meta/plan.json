@@ -1,0 +1,22 @@
+{
+  "dataset_path": "C:\\Users\\Admin\\kimi_gui_automation\\AutoLabel\\数据集测试\\作弊",
+  "image_count": 494,
+  "pending_count": 489,
+  "skipped_existing": 5,
+  "annotation_task": "实例分割",
+  "object_granularity": "instance",
+  "targets_summary": "手机（标注图片中每一部真实可见的手机（实例分割），包括智能手机与功能机；被部分遮挡但仍可辨认的手机也要标注。） 排除:图片、海报或屏幕中显示的手机,玩具手机,手机壳、手机配件单独出现",
+  "backend_id": "sam3_local",
+  "backend_capabilities": {
+    "image_input": true,
+    "text_guided_segmentation": true,
+    "instance_mask": true,
+    "class_mask": false,
+    "confidence": true,
+    "reference_images": false
+  },
+  "overwrite_policy": "skip_existing",
+  "preview_count": 5,
+  "review_policy": "low_confidence_only",
+  "warnings": []
+}

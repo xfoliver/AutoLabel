@@ -1,8 +1,0 @@
-PyQt5
-mss
-numpy
-opencv-python
-PyGetWindow
-obsws-python
-psutil
-markdown

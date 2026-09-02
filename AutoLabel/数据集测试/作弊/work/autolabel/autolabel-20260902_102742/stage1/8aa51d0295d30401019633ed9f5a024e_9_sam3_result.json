@@ -1,0 +1,31 @@
+{
+  "prompt": "phone",
+  "image_path": "C:\\Users\\Admin\\kimi_gui_automation\\AutoLabel\\数据集测试\\作弊\\8aa51d0295d30401019633ed9f5a024e_9.jpg",
+  "image_size": [
+    640,
+    480
+  ],
+  "score_threshold": 0.55,
+  "exif_orientation": 8,
+  "pil_raw_size_wh": [
+    480,
+    640
+  ],
+  "normalized_size_wh": [
+    640,
+    480
+  ],
+  "applied_exif_transpose": true,
+  "instances": [
+    {
+      "score": null,
+      "bbox": [
+        375.095458984375,
+        112.41393280029297,
+        396.8312072753906,
+        168.23301696777344
+      ],
+      "area": 752
+    }
+  ]
+}

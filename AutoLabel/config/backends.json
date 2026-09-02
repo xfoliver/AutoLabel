@@ -1,0 +1,108 @@
+{
+  "active_backend": "sam3_local",
+  "backends": [
+    {
+      "id": "sam3_local",
+      "type": "sam3_local",
+      "options": {
+        "python_path": "C:\\dlcv\\envs\\sam3\\python.exe",
+        "host": "127.0.0.1",
+        "port": 9892,
+        "score_threshold": 0.55,
+        "min_area": 64,
+        "epsilon_ratio": 0.001,
+        "nms_iou_threshold": 0.7,
+        "save_raw_mask": true,
+        "save_overlay": true,
+        "timeout": 180,
+        "startup_timeout": 600,
+        "capabilities": {
+          "instance_mask": true,
+          "text_guided_segmentation": true,
+          "confidence": true
+        }
+      }
+    },
+    {
+      "id": "mock",
+      "type": "mock",
+      "options": {
+        "mode": "letterbox",
+        "model_input": [
+          640,
+          640
+        ],
+        "mask_scale": 0.25,
+        "n_instances": 2,
+        "adjacent": true,
+        "with_scores": true,
+        "seed": 0
+      }
+    },
+    {
+      "id": "http_seg",
+      "type": "http_api",
+      "options": {
+        "base_url": "",
+        "endpoint": "/v1/segment",
+        "api_key_env": "AUTOLABEL_VISION_KEY",
+        "model": "",
+        "capabilities": {
+          "instance_mask": true,
+          "confidence": true,
+          "text_guided_segmentation": true
+        }
+      }
+    },
+    {
+      "id": "gpt_image_mask",
+      "type": "openai_image_edits",
+      "options": {
+        "base_url": "https://vectorengine.ai/v1",
+        "endpoint": "/images/edits",
+        "model": "gpt-image-2",
+        "api_key": "sk-kbAe93oYOuzIdAgTrpWUzN4KwIcoJ12V243QI9GpPXjpERyv",
+        "api_key_env": "AUTOLABEL_VISION_KEY",
+        "size": "1024x1024",
+        "quality": "low",
+        "upload_format": "jpeg",
+        "jpeg_quality": 85,
+        "downscale_upload": true,
+        "timeout": 240,
+        "http_proxy": "http://127.0.0.1:7890",
+        "min_area": 128,
+        "quantize": 8,
+        "merge_fragments": true,
+        "merge_iou": 0.15,
+        "merge_bbox_iou": 0.2,
+        "min_relative_area": 0.12,
+        "capabilities": {
+          "instance_mask": true,
+          "text_guided_segmentation": true,
+          "confidence": false
+        },
+        "epsilon_ratio": 0.003,
+        "mask_close_ksize": 3,
+        "mask_open_ksize": 3,
+        "grabcut": true,
+        "grabcut_iters": 3,
+        "grabcut_pad_px": 0,
+        "grabcut_sure_fg_erode": 0,
+        "grabcut_sure_bg_dilate": 0,
+        "merge_gap_px": 2
+      }
+    },
+    {
+      "id": "dlcv_9890",
+      "type": "dlcv",
+      "options": {
+        "base_url": "http://127.0.0.1:9890",
+        "model_path": "",
+        "capabilities": {
+          "instance_mask": true,
+          "confidence": true
+        }
+      }
+    }
+  ]
+}

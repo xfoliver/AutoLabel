@@ -1,0 +1,29 @@
+{
+  "action": "auto_label",
+  "annotation_task": "实例分割",
+  "object_granularity": "instance",
+  "targets": [
+    {
+      "label": "手机",
+      "description": "手机",
+      "include": [],
+      "exclude": []
+    }
+  ],
+  "dataset_path": "C:/Users/Admin/kimi_gui_automation/AutoLabel/数据集测试/作弊",
+  "dataset_clues": {
+    "drive": null,
+    "path_fragments": [],
+    "dataset_name": null
+  },
+  "references": {
+    "positive": [],
+    "negative": []
+  },
+  "instance_policy": "separate_each_object",
+  "review_policy": "low_confidence_only",
+  "overwrite_policy": "skip_existing",
+  "output_format": "labelmeai",
+  "backend_preference": "auto",
+  "preview_count": 5
+}

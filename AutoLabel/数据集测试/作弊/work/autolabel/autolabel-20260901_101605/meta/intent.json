@@ -1,0 +1,38 @@
+{
+  "action": "auto_label",
+  "annotation_task": "实例分割",
+  "object_granularity": "instance",
+  "targets": [
+    {
+      "label": "手机",
+      "description": "图片中的手机（移动电话/智能手机），每部手机作为独立实例标注，掩码需贴合手机整机轮廓，被遮挡部分按可见区域绘制",
+      "include": [
+        "智能手机",
+        "功能手机",
+        "各种品牌与颜色的手机"
+      ],
+      "exclude": [
+        "平板电脑",
+        "固定电话",
+        "手机壳等单独配件",
+        "图片中印刷或屏幕里显示的手机图案"
+      ]
+    }
+  ],
+  "dataset_path": "C:/Users/Admin/kimi_gui_automation/AutoLabel/数据集测试/作弊",
+  "dataset_clues": {
+    "drive": null,
+    "path_fragments": [],
+    "dataset_name": null
+  },
+  "references": {
+    "positive": [],
+    "negative": []
+  },
+  "instance_policy": "separate_each_object",
+  "review_policy": "low_confidence_only",
+  "overwrite_policy": "skip_existing",
+  "output_format": "labelmeai",
+  "backend_preference": "auto",
+  "preview_count": 5
+}

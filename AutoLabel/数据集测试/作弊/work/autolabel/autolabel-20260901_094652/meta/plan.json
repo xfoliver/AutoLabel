@@ -1,0 +1,24 @@
+{
+  "dataset_path": "C:\\Users\\Admin\\kimi_gui_automation\\AutoLabel\\数据集测试\\作弊",
+  "image_count": 494,
+  "pending_count": 489,
+  "skipped_existing": 5,
+  "annotation_task": "实例分割",
+  "object_granularity": "instance",
+  "targets_summary": "手机（标注图片中所有可见的手机，包括智能手机、移动电话等手持通讯设备，按实例分割方式逐部勾画掩码轮廓，被部分遮挡的手机也应尽量标注可见部分） 排除:平板电脑,笔记本电脑,手机壳（无手机本体时）,手机包装盒,图片中的海报/屏幕里出现的手机图案",
+  "backend_id": "gpt_image_mask",
+  "backend_capabilities": {
+    "image_input": true,
+    "text_guided_segmentation": true,
+    "instance_mask": true,
+    "class_mask": false,
+    "confidence": false,
+    "reference_images": false
+  },
+  "overwrite_policy": "skip_existing",
+  "preview_count": 5,
+  "review_policy": "low_confidence_only",
+  "warnings": [
+    "backend provides no model_confidence; results will enter sample/review, not high-confidence auto-accept"
+  ]
+}

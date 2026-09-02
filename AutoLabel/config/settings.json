@@ -1,0 +1,9 @@
+{
+  "llm_profiles": [],
+  "llm_active_id": "",
+  "llm_base_url": "http://192.168.1.3:3000/v1",
+  "llm_api_key": "sk-XHETL1atd6ao007RKk5XynoRyqEmJ36pgEp8Snp0N1uUk0a3",
+  "llm_model": "kimi-k3",
+  "llm_protocol": "openai",
+  "intent_mode": "auto"
+}

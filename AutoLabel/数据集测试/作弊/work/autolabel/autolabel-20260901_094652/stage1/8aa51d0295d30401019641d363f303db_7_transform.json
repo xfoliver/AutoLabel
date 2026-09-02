@@ -1,0 +1,25 @@
+{
+  "original_size": [
+    480,
+    640
+  ],
+  "model_input_size": [
+    1254,
+    1254
+  ],
+  "mask_size": [
+    1254,
+    1254
+  ],
+  "mask_to_input": {
+    "mode": "identity"
+  },
+  "input_to_original": {
+    "mode": "letterbox",
+    "scale": 1.959375,
+    "pad_left": 156.75,
+    "pad_top": 0.0,
+    "pad_right": 156.75,
+    "pad_bottom": 0.0
+  }
+}

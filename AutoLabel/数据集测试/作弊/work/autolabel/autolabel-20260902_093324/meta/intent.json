@@ -1,0 +1,38 @@
+{
+  "action": "auto_label",
+  "annotation_task": "实例分割",
+  "object_granularity": "instance",
+  "targets": [
+    {
+      "label": "手机",
+      "description": "标注图片中每一部真实可见的手机（实例分割），包括智能手机与功能机；被部分遮挡但仍可辨认的手机也要标注。",
+      "include": [
+        "智能手机",
+        "功能手机",
+        "部分遮挡的手机"
+      ],
+      "exclude": [
+        "图片、海报或屏幕中显示的手机",
+        "玩具手机",
+        "手机壳、手机配件单独出现"
+      ],
+      "model_prompt": "phone"
+    }
+  ],
+  "dataset_path": "C:/Users/Admin/kimi_gui_automation/AutoLabel/数据集测试/作弊",
+  "dataset_clues": {
+    "drive": null,
+    "path_fragments": [],
+    "dataset_name": null
+  },
+  "references": {
+    "positive": [],
+    "negative": []
+  },
+  "instance_policy": "separate_each_object",
+  "review_policy": "low_confidence_only",
+  "overwrite_policy": "skip_existing",
+  "output_format": "labelmeai",
+  "backend_preference": "auto",
+  "preview_count": 5
+}

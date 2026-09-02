@@ -1,0 +1,21 @@
+{
+  "prompt": "phone",
+  "image_path": "C:\\Users\\Admin\\kimi_gui_automation\\AutoLabel\\数据集测试\\作弊\\8aa51d0295d3040101963d7485f8031d_22.jpg",
+  "image_size": [
+    480,
+    640
+  ],
+  "score_threshold": 0.55,
+  "instances": [
+    {
+      "score": null,
+      "bbox": [
+        110.67134857177734,
+        322.76043701171875,
+        135.13758850097656,
+        369.0968017578125
+      ],
+      "area": 792
+    }
+  ]
+}

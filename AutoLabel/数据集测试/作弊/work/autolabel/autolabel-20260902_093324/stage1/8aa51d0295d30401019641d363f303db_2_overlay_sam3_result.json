@@ -1,0 +1,21 @@
+{
+  "prompt": "phone",
+  "image_path": "C:\\Users\\Admin\\kimi_gui_automation\\AutoLabel\\数据集测试\\作弊\\labelme_export_from_preview_20260820_171812\\8aa51d0295d30401019641d363f303db_2_overlay.jpg",
+  "image_size": [
+    480,
+    640
+  ],
+  "score_threshold": 0.55,
+  "instances": [
+    {
+      "score": null,
+      "bbox": [
+        365.9237976074219,
+        211.91490173339844,
+        404.3714904785156,
+        318.5124206542969
+      ],
+      "area": 3449
+    }
+  ]
+}

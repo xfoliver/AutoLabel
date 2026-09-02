@@ -1,0 +1,64 @@
+{
+  "path": "C:\\Users\\Admin\\kimi_gui_automation\\AutoLabel\\数据集测试\\作弊\\8aa51d0295d3040101962e14936d01ec_1.jpg",
+  "exif_orientation": 8,
+  "pil_raw_size_wh": [
+    480,
+    640
+  ],
+  "after_exif_transpose_wh": [
+    640,
+    480
+  ],
+  "opencv_normalized_wh": [
+    640,
+    480
+  ],
+  "sam3_image_size_wh": [
+    640,
+    480
+  ],
+  "sam3_exif_orientation": 8,
+  "sam3_pil_raw_size_wh": [
+    480,
+    640
+  ],
+  "sam3_normalized_size_wh": [
+    640,
+    480
+  ],
+  "mask_shape_hw": [
+    480,
+    640
+  ],
+  "transform": {
+    "original_size": [
+      640,
+      480
+    ],
+    "model_input_size": [
+      640,
+      480
+    ],
+    "mask_size": [
+      640,
+      480
+    ],
+    "mask_to_input": {
+      "mode": "identity"
+    },
+    "input_to_original": {
+      "mode": "identity"
+    }
+  },
+  "polygon_xy_range": {
+    "min_x": 156.0,
+    "max_x": 174.0,
+    "min_y": 113.0,
+    "max_y": 156.0
+  },
+  "n_shapes": 1,
+  "labelme_image_wh": [
+    640,
+    480
+  ]
+}

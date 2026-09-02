@@ -1,0 +1,22 @@
+{
+  "original_size": [
+    480,
+    640
+  ],
+  "model_input_size": [
+    1024,
+    1024
+  ],
+  "mask_size": [
+    1024,
+    1024
+  ],
+  "mask_to_input": {
+    "mode": "identity"
+  },
+  "input_to_original": {
+    "mode": "stretch",
+    "scale_x": 2.1333333333333333,
+    "scale_y": 1.6
+  }
+}
