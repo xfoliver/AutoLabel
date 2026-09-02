@@ -12,10 +12,14 @@ PROJECT = ROOT.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(PROJECT))
 
+import numpy as np  # noqa: E402
+
 from autolabel.geometry.transform import (  # noqa: E402
     build_letterbox_meta,
     build_stretch_meta,
+    letterbox_image_bgr,
     map_mask_to_original,
+    warp_mask_to_original,
 )
 from autolabel.models import AffineStep, TransformMeta  # noqa: E402
 
@@ -99,3 +103,41 @@ def test_from_dict_roundtrip_letterbox():
     x2, y2 = map_mask_to_original(10, 20, restored)
     assert abs(x1 - x2) < 1e-6
     assert abs(y1 - y2) < 1e-6
+
+
+def test_letterbox_keeps_left_object_on_the_left():
+    """Portrait photo → square canvas: a left blob must stay left after warp.
+
+    Stretch mapping of the same square mask would push it toward the right
+    because it treats letterbox side-pads as content.
+    """
+    ow, oh = 100, 200
+    canvas = 100
+    meta = build_letterbox_meta((ow, oh), (canvas, canvas), (canvas, canvas))
+    mask = np.zeros((canvas, canvas), dtype=np.uint8)
+    # scale=100/200=0.5, pad_left=(100-50)/2=25. Original x=10..30 → mask x=30..40.
+    mask[40:60, 30:40] = 1
+    warped = warp_mask_to_original(mask, meta)
+    assert warped.shape == (oh, ow)
+    ys, xs = np.where(warped > 0)
+    assert xs.size > 0
+    cx = float(xs.mean())
+    assert cx < 40, f"letterbox warp drifted right, cx={cx}"
+
+    stretch = build_stretch_meta((ow, oh), (canvas, canvas), (canvas, canvas))
+    stretched = warp_mask_to_original(mask, stretch)
+    assert float(np.where(stretched > 0)[1].mean()) > cx + 5
+
+
+def test_letterbox_image_bgr_centers_content():
+    img = np.zeros((40, 80, 3), dtype=np.uint8)
+    img[:, :] = (10, 10, 10)
+    img[10:30, 10:20] = (0, 0, 255)  # left red block
+    canvas, meta = letterbox_image_bgr(img, (64, 64), fill=0)
+    assert canvas.shape == (64, 64, 3)
+    assert meta.input_to_original.mode == "letterbox"
+    # Content occupies the middle band (pad top/bottom), left red stays left.
+    ys, xs = np.where(canvas[:, :, 2] > 200)
+    assert xs.size > 0
+    assert float(xs.mean()) < 32
+    assert int(canvas[0, 32].sum()) == 0  # top pad is black

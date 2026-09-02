@@ -53,12 +53,25 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--commit", action="store_true", help="Commit work JSON 到旁路")
     parser.add_argument("--preview-count", type=int, default=5)
     parser.add_argument("--plan-only", action="store_true")
+    parser.add_argument("--intent-mode", default=None, help="auto | llm | simple")
+    parser.add_argument("--score-threshold", type=float, default=None, help="SAM3 score threshold")
+    parser.add_argument("--min-area", type=int, default=None, help="drop tiny instances (px)")
     args = parser.parse_args(argv)
 
     backends_path = Path(args.backends_config) if args.backends_config else None
     bcfg = load_backends_config(backends_path)
     backend = build_backend_from_config(bcfg, args.backend)
     settings = _load_settings(Path(args.settings) if args.settings else None)
+    if args.intent_mode:
+        settings["intent_mode"] = args.intent_mode
+    if args.score_threshold is not None and hasattr(backend, "score_threshold"):
+        backend.score_threshold = float(args.score_threshold)
+        if getattr(backend, "options", None) is not None:
+            backend.options["score_threshold"] = float(args.score_threshold)
+    if args.min_area is not None and hasattr(backend, "min_area"):
+        backend.min_area = int(args.min_area)
+        if getattr(backend, "options", None) is not None:
+            backend.options["min_area"] = int(args.min_area)
 
     orch = AutoLabelOrchestrator(
         backends_config=bcfg,

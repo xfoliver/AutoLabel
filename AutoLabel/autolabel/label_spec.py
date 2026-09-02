@@ -13,6 +13,7 @@ def build_label_spec(
     exclude: list | None = None,
     include: list | None = None,
     annotation_task: str = "实例分割",
+    model_prompt: str = "",
 ) -> LabelSpec:
     clean_label = require_nonempty_label(label)
     clean_desc = (description or "").strip()
@@ -21,6 +22,7 @@ def build_label_spec(
         description=clean_desc,
         include=list(include or []),
         exclude=list(exclude or []),
+        model_prompt=(model_prompt or "").strip(),
     )
     return LabelSpec(
         annotation_task=annotation_task,

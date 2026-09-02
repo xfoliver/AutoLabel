@@ -142,8 +142,22 @@ def test_openai_backend_default_close_ksize_is_zero():
 
 
 def test_build_mask_prompt_includes_silhouette_rules():
-    spec = build_label_spec(label="手机", description="机身", exclude=["壳装饰"])
+    spec = build_label_spec(label="零件", description="金属件", exclude=["包装"])
     p = build_mask_prompt(spec)
     assert "pixel-accurate" in p.lower() or "silhouette" in p.lower()
     assert "halo" in p.lower()
-    assert "壳装饰" in p
+    assert "包装" in p
+    assert "零件" in p
+    low = p.lower()
+    assert "phone" not in low
+    assert "handset" not in low
+    assert "chassis" not in low
+    assert "case decorations" not in low
+    assert "accessories" not in low
+
+
+def test_build_mask_prompt_default_has_no_extra_block():
+    spec = build_label_spec(label="缺陷")
+    p = build_mask_prompt(spec)
+    assert "Additional instructions:" not in p
+    assert "缺陷" in p

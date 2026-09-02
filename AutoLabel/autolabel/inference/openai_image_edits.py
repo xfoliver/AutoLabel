@@ -7,9 +7,11 @@ from __future__ import annotations
 
 import base64
 import io
+import logging
 import os
+import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -17,10 +19,12 @@ import requests
 
 from autolabel.cv_io import imread
 from autolabel.errors import ImageModerationBlocked
-from autolabel.geometry.transform import build_stretch_meta
+from autolabel.geometry.transform import build_letterbox_meta, letterbox_image_bgr
 from autolabel.inference.base import BackendCapabilities, InferenceBackend, register_backend
 from autolabel.mask.color_instances import colored_mask_to_instances
 from autolabel.models import LabelSpec, References, Stage1Result
+
+logger = logging.getLogger(__name__)
 
 
 _MODERATION_MARKERS = (
@@ -73,11 +77,77 @@ def build_mask_prompt(label_spec: LabelSpec, *, prompt_extra: str = "") -> str:
         "- Tight pixel-accurate silhouette: follow the true object boundary closely.\n"
         "- No halo, glow, or outline stroke outside the object.\n"
         "- Cover the full object silhouette; do not leave holes unless the object has a real hole.\n"
-        "- Respect Exclude: do not paint case decorations, accessories, or other non-targets.\n"
+        "- Respect Exclude: do not paint listed exclusions or any other non-targets.\n"
         "- If ZERO matching objects are present in the photo, output a PURE BLACK image only. "
         "Do NOT invent, hallucinate, or fill any colored regions.\n"
         "- Never paint non-target objects just to avoid an empty mask.\n"
     )
+
+
+def parse_size_wh(size: str) -> Tuple[int, int]:
+    """Parse OpenAI-style ``1024x1024`` / ``1024`` into (width, height)."""
+    text = str(size or "1024x1024").strip().lower().replace("*", "x").replace("×", "x")
+    if "x" not in text:
+        n = max(1, int(float(text)))
+        return n, n
+    a, b = text.split("x", 1)
+    return max(1, int(float(a))), max(1, int(float(b)))
+
+
+def request_proxies(base_url: str, http_proxy: str = "") -> Optional[Dict[str, Optional[str]]]:
+    """Return ``requests`` proxies. Private/LAN hosts always bypass the proxy."""
+    from urllib.parse import urlparse
+
+    host = (urlparse(str(base_url or "")).hostname or "").strip().lower()
+    if host in {"localhost", "127.0.0.1", "::1"} or host.startswith("192.168.") or host.startswith("10."):
+        return {"http": None, "https": None}
+    if host.startswith("172."):
+        try:
+            second = int(host.split(".")[1])
+            if 16 <= second <= 31:
+                return {"http": None, "https": None}
+        except (IndexError, ValueError):
+            pass
+    proxy = str(http_proxy or "").strip()
+    if not proxy:
+        return None
+    return {"http": proxy, "https": proxy}
+
+
+def prepare_upload_image(
+    image_bgr: np.ndarray,
+    *,
+    size: str = "1024x1024",
+    upload_format: str = "jpeg",
+    jpeg_quality: int = 85,
+    downscale: bool = True,
+) -> Tuple[bytes, str, str, Tuple[int, int]]:
+    """Letterbox the source photo onto the requested edits canvas and encode it.
+
+    gpt-image-* generates a square canvas. Sending a non-square JPEG makes the
+    model pad internally; mapping that mask back with stretch shifts objects
+    sideways. We pad here with black so upload geometry == mask geometry.
+    ``downscale`` is kept for config compatibility; the canvas is always
+    ``size``. Returns ``(payload, filename, mime, (w, h))``.
+    """
+    del downscale  # canvas is always the requested size
+    if image_bgr is None or np.asarray(image_bgr).size == 0:
+        raise RuntimeError("Cannot encode empty image for edits upload")
+    tw, th = parse_size_wh(size)
+    canvas, _meta = letterbox_image_bgr(image_bgr, (tw, th), fill=0)
+    h, w = canvas.shape[:2]
+
+    fmt = str(upload_format or "jpeg").strip().lower().lstrip(".")
+    if fmt in {"jpg", "jpeg"}:
+        q = int(min(100, max(40, jpeg_quality)))
+        ok, buf = cv2.imencode(".jpg", canvas, [int(cv2.IMWRITE_JPEG_QUALITY), q])
+        if not ok:
+            raise RuntimeError("Failed to encode image as JPEG for edits upload")
+        return buf.tobytes(), "image.jpg", "image/jpeg", (w, h)
+    ok, buf = cv2.imencode(".png", canvas)
+    if not ok:
+        raise RuntimeError("Failed to encode image as PNG for edits upload")
+    return buf.tobytes(), "image.png", "image/png", (w, h)
 
 
 class OpenAIImageEditsBackend(InferenceBackend):
@@ -96,6 +166,18 @@ class OpenAIImageEditsBackend(InferenceBackend):
         self.api_key = str(self.options.get("api_key") or os.environ.get(env_key) or "")
         self.size = str(self.options.get("size") or "1024x1024")
         self.timeout = float(self.options.get("timeout") or 180)
+        self.quality = str(self.options.get("quality") or "").strip()
+        self.upload_format = str(self.options.get("upload_format") or "jpeg").strip().lower()
+        self.jpeg_quality = int(self.options.get("jpeg_quality") or 85)
+        self.downscale_upload = bool(self.options.get("downscale_upload", True))
+        self.http_proxy = str(
+            self.options.get("http_proxy")
+            or os.environ.get("HTTPS_PROXY")
+            or os.environ.get("https_proxy")
+            or os.environ.get("HTTP_PROXY")
+            or os.environ.get("http_proxy")
+            or ""
+        ).strip()
         self.min_area = int(self.options.get("min_area") or 64)
         self.quantize = int(self.options.get("quantize") or 8)
         self.bg_luma_thresh = float(self.options.get("bg_luma_thresh") or 24)
@@ -165,14 +247,15 @@ class OpenAIImageEditsBackend(InferenceBackend):
         url = f"{self.base_url}{self.endpoint}"
         headers = {"Authorization": f"Bearer {self.api_key}"}
 
-        # Encode as PNG bytes for multipart
-        ok, buf = cv2.imencode(".png", img)
-        if not ok:
-            raise RuntimeError("Failed to encode image as PNG for edits upload")
-        png_bytes = buf.tobytes()
-
+        upload_bytes, upload_name, upload_mime, upload_wh = prepare_upload_image(
+            img,
+            size=self.size,
+            upload_format=self.upload_format,
+            jpeg_quality=self.jpeg_quality,
+            downscale=self.downscale_upload,
+        )
         files = {
-            "image": (path.name if path.suffix else "image.png", io.BytesIO(png_bytes), "image/png"),
+            "image": (upload_name, io.BytesIO(upload_bytes), upload_mime),
         }
         data = {
             "model": self.model,
@@ -180,11 +263,39 @@ class OpenAIImageEditsBackend(InferenceBackend):
             "n": "1",
             "size": self.size,
         }
+        if self.quality:
+            data["quality"] = self.quality
 
+        proxies = request_proxies(self.base_url, self.http_proxy)
+        t0 = time.perf_counter()
         try:
-            resp = requests.post(url, headers=headers, data=data, files=files, timeout=self.timeout)
+            # Connect budget is short; generation wait stays ``timeout`` (default 180s).
+            resp = requests.post(
+                url,
+                headers=headers,
+                data=data,
+                files=files,
+                timeout=(15.0, self.timeout),
+                proxies=proxies,
+            )
         except requests.RequestException as e:
-            raise RuntimeError(f"Backend {self.id}: request failed: {e}") from e
+            elapsed = time.perf_counter() - t0
+            raise RuntimeError(
+                f"Backend {self.id}: request failed after {elapsed:.1f}s: {e}"
+            ) from e
+        elapsed = time.perf_counter() - t0
+        logger.info(
+            "[%s] %s upload=%dx%d %dKB quality=%s proxy=%s elapsed=%.1fs http=%s",
+            self.id,
+            path.name,
+            upload_wh[0],
+            upload_wh[1],
+            len(upload_bytes) // 1024,
+            self.quality or "-",
+            (proxies or {}).get("https") or "direct",
+            elapsed,
+            getattr(resp, "status_code", "?"),
+        )
 
         if resp.status_code >= 400:
             body = (resp.text or "")[:800]
@@ -237,7 +348,8 @@ class OpenAIImageEditsBackend(InferenceBackend):
             if label_spec.class_names
             else (label_spec.targets[0].label if label_spec.targets else "object")
         )
-        transform = build_stretch_meta(
+        # Square canvas + non-square photo: letterbox, never anisotropic stretch.
+        transform = build_letterbox_meta(
             original_wh=(ow, oh),
             model_input_wh=(mw, mh),
             mask_wh=(mw, mh),
@@ -266,6 +378,10 @@ class OpenAIImageEditsBackend(InferenceBackend):
         raw_meta = {
             "model": self.model,
             "size_requested": self.size,
+            "quality": self.quality or None,
+            "upload_size": [upload_wh[0], upload_wh[1]],
+            "upload_bytes": len(upload_bytes),
+            "request_seconds": round(elapsed, 3),
             "mask_size": [mw, mh],
             "usage": payload.get("usage") if isinstance(payload, dict) else None,
             "output_format": payload.get("output_format") if isinstance(payload, dict) else None,
@@ -279,7 +395,12 @@ class OpenAIImageEditsBackend(InferenceBackend):
             "merge_gap_px": self.merge_gap_px,
             "min_relative_area": self.min_relative_area,
         }
-        return Stage1Result(instances=instances, transform=transform, raw=raw_meta)
+        return Stage1Result(
+            instances=instances,
+            transform=transform,
+            colored_mask=mask_bgr,
+            raw=raw_meta,
+        )
 
 
 @register_backend("openai_image_edits")

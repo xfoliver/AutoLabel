@@ -46,10 +46,11 @@ def test_stylesheet_follows_factor():
     css1 = build_stylesheet(s)
     s.factor = 0.8
     css2 = build_stylesheet(s)
-    assert "font-size: 16px" in css1  # Title
-    assert "font-size: 13px" in css2  # Title 16 * 0.8
+    assert "font-size: 22px" in css1  # Title / PageTitle
+    assert "font-size: 18px" in css2  # Title 22 * 0.8
     assert APP_QSS
     assert "QPushButton#Primary" in APP_QSS
+    assert "QPushButton#StartBtn" in APP_QSS
 
 
 @pytest.fixture(scope="module")
@@ -62,22 +63,23 @@ def qapp():
 
 
 def test_main_window_compact_metrics(qapp):
-    from PyQt5.QtWidgets import QBoxLayout
-
     from ui.app_window import MainWindow
 
     win = MainWindow()
-    win.resize(UIScale.REF_W, UIScale.REF_H)
+    win.resize(1180, 760)
     win._apply_responsive_scale(force=True)
-    assert win._actions_layout.direction() == QBoxLayout.LeftToRight
+    assert win._last_compact is False
+    assert win._sidebar.width() >= 200
+    assert win.pages.count() == 4
     assert win.ed_prompt.maximumHeight() >= 56
+    assert hasattr(win, "btn_plan")
 
     win.resize(720, 520)
     win._apply_responsive_scale(force=True)
     assert win._last_compact is True
-    assert win._actions_layout.direction() == QBoxLayout.TopToBottom
-    assert win.ed_prompt.maximumHeight() <= 88
+    assert win._sidebar.width() <= 120
     assert "font-size:" in win.styleSheet()
+    assert "QPushButton#StartBtn" in win.styleSheet()
     win.close()
 
 

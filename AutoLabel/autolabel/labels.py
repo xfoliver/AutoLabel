@@ -17,7 +17,7 @@ def require_nonempty_label(label: str) -> str:
     s = (label or "").strip()
     if not s:
         raise IntentError(
-            "targets[].label 不能为空；请让 LLM 输出短类别名（如「手机」），"
+            "targets[].label 不能为空；请让 LLM 输出短类别名（如「零件」），"
             "或在手工模式下填写短类别名"
         )
     return s
@@ -36,6 +36,7 @@ def sanitize_target_spec(target: TargetSpec) -> TargetSpec:
         description=(target.description or "").strip(),
         include=list(target.include or []),
         exclude=list(target.exclude or []),
+        model_prompt=str(getattr(target, "model_prompt", "") or "").strip(),
     )
 
 

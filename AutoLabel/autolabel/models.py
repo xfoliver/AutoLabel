@@ -17,6 +17,7 @@ class TargetSpec:
     description: str = ""
     include: List[str] = field(default_factory=list)
     exclude: List[str] = field(default_factory=list)
+    model_prompt: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -28,6 +29,7 @@ class TargetSpec:
             description=str(data.get("description") or ""),
             include=[str(x) for x in (data.get("include") or [])],
             exclude=[str(x) for x in (data.get("exclude") or [])],
+            model_prompt=str(data.get("model_prompt") or "").strip(),
         )
 
 
@@ -155,6 +157,7 @@ class LabelSpec:
                 description=(t.description or "").strip(),
                 include=list(t.include or []),
                 exclude=list(t.exclude or []),
+                model_prompt=str(getattr(t, "model_prompt", "") or "").strip(),
             )
             for t in raw
         ]
@@ -355,6 +358,7 @@ class Stage1Result:
     instances: List[InstancePred]
     transform: TransformMeta
     class_mask: Optional[np.ndarray] = None
+    colored_mask: Optional[np.ndarray] = None  # gpt-image RGB mask (BGR uint8), if any
     viz_rgb_path: Optional[str] = None
     raw: Any = None
 
@@ -429,6 +433,7 @@ class ImageAnnotationResult:
     transform: TransformMeta
     work_json_path: Optional[Path] = None
     preview_overlay_path: Optional[Path] = None
+    preview_mask_path: Optional[Path] = None
     review: Optional[ReviewItem] = None
     error: Optional[str] = None
     skipped: bool = False

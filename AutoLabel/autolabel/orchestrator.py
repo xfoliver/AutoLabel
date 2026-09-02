@@ -35,7 +35,7 @@ from autolabel.models import (
 from autolabel.plan import build_plan, format_plan_text
 from autolabel.preview import sample_preview_images
 from autolabel.scoring.risk import summarize_image_bucket
-from autolabel.cv_io import imread
+from autolabel.cv_io import imread, imwrite
 from autolabel.stage2 import annotate_image_to_dict, stage1_to_shapes
 from autolabel.viz import draw_shapes_overlay
 
@@ -97,9 +97,20 @@ class AutoLabelOrchestrator:
         self.state.intent = intent
         return intent
 
+    def _ensure_sam3_worker(self) -> None:
+        backend = self.backend
+        if backend is None or getattr(backend, "id", "") != "sam3_local":
+            if str(type(backend).__name__) != "Sam3LocalBackend":
+                return
+        from autolabel.sam3_worker_ctl import ensure_worker, worker_options
+
+        opt = dict(getattr(backend, "options", None) or worker_options(self.backends_config))
+        ensure_worker(opt, log=self.log, timeout=float(opt.get("startup_timeout") or 600))
+
     def build_plan(self, *, dataset_path: Optional[str] = None) -> PlanPreview:
         if self.state.intent is None:
             raise RuntimeError("intent not set")
+        self._ensure_sam3_worker()
         plan = build_plan(
             self.state.intent,
             self.backend,
@@ -255,6 +266,8 @@ class AutoLabelOrchestrator:
         kind: str,
     ) -> ImageAnnotationResult:
         try:
+            if hasattr(self.backend, "debug_dir"):
+                self.backend.debug_dir = run_dir / "stage1"
             s1 = self.backend.predict(image_path, spec, references=spec.reference_images)
         except ImageModerationBlocked as e:
             return self._moderation_skip_result(image_path, run_dir, kind=kind, error=e)
@@ -263,6 +276,29 @@ class AutoLabelOrchestrator:
         stem = image_path.stem
         meta_path = run_dir / "stage1" / f"{stem}_transform.json"
         write_json(meta_path, s1.transform.to_dict())
+
+        mask_path = None
+        if getattr(s1, "colored_mask", None) is not None:
+            mask_path = run_dir / "stage1" / f"{stem}_rawmask.png"
+            try:
+                if not imwrite(mask_path, s1.colored_mask):
+                    self.log(f"raw mask write failed for {image_path.name}")
+                    mask_path = None
+            except Exception as e:
+                self.log(f"raw mask write failed for {image_path.name}: {e}")
+                mask_path = None
+        raw = getattr(s1, "raw", None)
+        if isinstance(raw, dict):
+            overlay_from_backend = raw.get("overlay_path")
+            if overlay_from_backend and Path(str(overlay_from_backend)).is_file() and mask_path is None:
+                mask_path = Path(str(overlay_from_backend))
+            first_mask = None
+            for item in raw.get("instances") or []:
+                if isinstance(item, dict) and item.get("mask_path"):
+                    first_mask = Path(str(item["mask_path"]))
+                    break
+            if first_mask is not None and first_mask.is_file() and mask_path is None:
+                mask_path = first_mask
 
         stage2_opts = {}
         if self.backend is not None and hasattr(self.backend, "stage2_options"):
@@ -287,6 +323,30 @@ class AutoLabelOrchestrator:
         except Exception as e:
             self.log(f"overlay failed for {image_path.name}: {e}")
 
+        try:
+            from autolabel.coord_debug import write_coord_debug
+
+            dbg = write_coord_debug(
+                image_path,
+                out_dir=run_dir / "stage1" / "debug" / stem,
+                shapes=shapes,
+                transform=s1.transform,
+                sam3_raw=raw if isinstance(raw, dict) else None,
+                mask_path=mask_path,
+                overlay_path=overlay,
+            )
+            self.log(
+                f"[IMAGE DEBUG] {image_path.name} EXIF={dbg.get('exif_orientation')} "
+                f"PIL_raw={dbg.get('pil_raw_size_wh')} "
+                f"normalized={dbg.get('after_exif_transpose_wh')} "
+                f"OpenCV={dbg.get('opencv_normalized_wh')} "
+                f"SAM3={dbg.get('sam3_image_size_wh')} "
+                f"mask_hw={dbg.get('mask_shape_hw')} "
+                f"poly={dbg.get('polygon_xy_range')}"
+            )
+        except Exception as e:
+            self.log(f"coord debug failed for {image_path.name}: {e}")
+
         bucket = summarize_image_bucket(shapes)
         confs = [s.model_confidence for s in shapes if s.model_confidence is not None]
         risks = [s.quality_risk for s in shapes]
@@ -304,6 +364,7 @@ class AutoLabelOrchestrator:
             transform=s1.transform,
             work_json_path=out_json,
             preview_overlay_path=overlay,
+            preview_mask_path=mask_path,
             review=review,
         )
 

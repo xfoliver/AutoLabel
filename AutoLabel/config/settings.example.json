@@ -5,5 +5,6 @@
   "llm_api_key": "",
   "llm_model": "kimi-k3",
   "llm_protocol": "openai",
-  "note": "本地 settings.json / backends.json 已 gitignore；可复用 ../pyqt_frontend/settings.json。LLM 与 Vision Key 分开配置。"
+  "intent_mode": "auto",
+  "note": "本地 settings.json / backends.json 已 gitignore；可复用 ../pyqt_frontend/settings.json。LLM 与 Vision Key 分开配置。intent_mode: auto | llm | simple。"
 }

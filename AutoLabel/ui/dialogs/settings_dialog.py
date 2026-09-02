@@ -84,6 +84,16 @@ class SettingsDialog(QDialog):
         self.ed_vision_key.setEchoMode(QLineEdit.Password)
         self.ed_vision_size = QLineEdit()
         self.ed_dlcv_model = QLineEdit()
+        self.ed_sam3_python = QLineEdit()
+        self.ed_sam3_host = QLineEdit()
+        self.ed_sam3_port = QLineEdit()
+        self.cmb_intent = QComboBox()
+        for mode, label in (("auto", "auto（短词跳过 LLM）"), ("simple", "simple（不调用 LLM）"), ("llm", "llm（必须解析）")):
+            self.cmb_intent.addItem(label, mode)
+        idx_mode = self.cmb_intent.findData(str(self.settings.get("intent_mode") or "auto"))
+        if idx_mode >= 0:
+            self.cmb_intent.setCurrentIndex(idx_mode)
+        form.addRow("Intent 模式", self.cmb_intent)
         form2 = QFormLayout()
         form2.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
         form2.setRowWrapPolicy(QFormLayout.WrapLongRows)
@@ -92,12 +102,16 @@ class SettingsDialog(QDialog):
         form2.addRow("Vision API Key", self.ed_vision_key)
         form2.addRow("Image size（gpt）", self.ed_vision_size)
         form2.addRow("DLCV model_path", self.ed_dlcv_model)
+        form2.addRow("SAM3 python", self.ed_sam3_python)
+        form2.addRow("SAM3 host", self.ed_sam3_host)
+        form2.addRow("SAM3 port", self.ed_sam3_port)
         layout.addLayout(form2)
         self._fill_backend_fields()
 
         hint = QLabel(
-            "LLM 与 Vision 配置独立可替换。gpt_image_mask 走 /v1/images/edits，"
-            "返回彩色 Mask 后本地拆实例；无 model confidence 时结果进抽检。"
+            "LLM 只解析意图（label + model_prompt）。Vision 默认 sam3_local："
+            "AutoLabel 经 HTTP 调用独立 SAM3 Worker（sam3 Conda Python），"
+            "不在本进程 import torch/sam3。可切回 gpt_image_mask 做 A/B。"
             "本地 settings.json / backends.json 已 gitignore，勿提交密钥。"
         )
         hint.setObjectName("Hint")
@@ -137,6 +151,9 @@ class SettingsDialog(QDialog):
         self.ed_vision_key.clear()
         self.ed_vision_size.clear()
         self.ed_dlcv_model.clear()
+        self.ed_sam3_python.clear()
+        self.ed_sam3_host.clear()
+        self.ed_sam3_port.clear()
 
         for b in self.backends_config.get("backends") or []:
             if b.get("id") == "dlcv_9890":
@@ -154,12 +171,19 @@ class SettingsDialog(QDialog):
             self.ed_vision_key.setText(str(opt.get("api_key") or ""))
             if btype == "openai_image_edits" or entry.get("id") == "gpt_image_mask":
                 self.ed_vision_size.setText(str(opt.get("size") or "1024x1024"))
+        if btype == "sam3_local" or entry.get("id") == "sam3_local":
+            self.ed_sam3_python.setText(str(opt.get("python_path") or r"C:\dlcv\envs\sam3\python.exe"))
+            self.ed_sam3_host.setText(str(opt.get("host") or "127.0.0.1"))
+            self.ed_sam3_port.setText(str(opt.get("port") or 9892))
 
     def _save(self):
         self.settings["llm_base_url"] = self.ed_base.text().strip()
         self.settings["llm_api_key"] = self.ed_key.text().strip()
         self.settings["llm_model"] = self.ed_model.text().strip()
         self.settings["llm_protocol"] = self.ed_proto.text().strip() or "auto"
+        mode = self.cmb_intent.currentData()
+        if mode:
+            self.settings["intent_mode"] = str(mode)
 
         active = self.cmb_backend.currentData()
         self.backends_config["active_backend"] = active
@@ -183,6 +207,24 @@ class SettingsDialog(QDialog):
                     size = self.ed_vision_size.text().strip()
                     if size:
                         entry["options"]["size"] = size
+            if btype == "sam3_local" or active == "sam3_local":
+                entry.setdefault("options", {})
+                py = self.ed_sam3_python.text().strip()
+                if py:
+                    entry["options"]["python_path"] = py
+                host = self.ed_sam3_host.text().strip()
+                if host:
+                    entry["options"]["host"] = host
+                port = self.ed_sam3_port.text().strip()
+                if port:
+                    try:
+                        entry["options"]["port"] = int(port)
+                    except ValueError:
+                        entry["options"]["port"] = port
+                entry["options"]["base_url"] = (
+                    f"http://{entry['options'].get('host') or '127.0.0.1'}:"
+                    f"{entry['options'].get('port') or 9892}"
+                )
 
         try:
             self.settings_path.parent.mkdir(parents=True, exist_ok=True)

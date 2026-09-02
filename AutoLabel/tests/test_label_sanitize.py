@@ -12,7 +12,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT.parent))
 
 from autolabel.errors import IntentError  # noqa: E402
-from autolabel.intent import parse_intent_from_text, parse_intent_manual  # noqa: E402
+from autolabel.intent import looks_like_simple_prompt, parse_intent_from_text, parse_intent_manual  # noqa: E402
 from autolabel.label_spec import build_label_spec  # noqa: E402
 from autolabel.labels import require_nonempty_label, sanitize_class_label, sanitize_target_spec  # noqa: E402
 from autolabel.models import LabelIntent, LabelSpec, TargetSpec  # noqa: E402
@@ -102,12 +102,31 @@ class _LongLabelClient:
 
 def test_parse_intent_requires_llm():
     with pytest.raises(IntentError):
-        parse_intent_from_text("标注手机", llm_client=_UnavailableClient())
+        parse_intent_from_text("标注手机", llm_client=_UnavailableClient(), intent_mode="llm")
+
+
+def test_parse_intent_auto_falls_back_to_simple_when_llm_down():
+    intent = parse_intent_from_text("phone", llm_client=_UnavailableClient(), intent_mode="auto")
+    assert intent.targets[0].label == "phone"
+    assert intent.targets[0].model_prompt == "phone"
+
+
+def test_looks_like_simple_prompt():
+    assert looks_like_simple_prompt("phone")
+    assert looks_like_simple_prompt("red car")
+    assert looks_like_simple_prompt("手机")
+    assert not looks_like_simple_prompt("标注图片中的手机")
+    assert not looks_like_simple_prompt("把这个目录里的汽车全部标出来")
+
+
+def test_parse_intent_simple_mode_skips_llm():
+    intent = parse_intent_from_text("car", llm_client=_UnavailableClient(), intent_mode="simple")
+    assert intent.targets[0].model_prompt == "car"
 
 
 def test_parse_intent_bad_json_raises():
     with pytest.raises(IntentError):
-        parse_intent_from_text("标注手机", llm_client=_BadJsonClient())
+        parse_intent_from_text("标注手机", llm_client=_BadJsonClient(), intent_mode="llm")
 
 
 def test_parse_intent_llm_success():
@@ -116,5 +135,11 @@ def test_parse_intent_llm_success():
 
 
 def test_parse_intent_accepts_long_label_from_llm_without_rewrite():
-    intent = parse_intent_from_text("把该目录中的手机标出来", llm_client=_LongLabelClient())
+    intent = parse_intent_from_text("把该目录中的手机标出来", llm_client=_LongLabelClient(), intent_mode="llm")
     assert intent.targets[0].label == "把该目录中的手机"
+
+
+def test_manual_intent_keeps_model_prompt():
+    intent = parse_intent_manual(label="手机", model_prompt="phone")
+    assert intent.targets[0].label == "手机"
+    assert intent.targets[0].model_prompt == "phone"

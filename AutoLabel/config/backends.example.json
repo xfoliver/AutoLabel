@@ -1,6 +1,28 @@
 {
-  "active_backend": "mock",
+  "active_backend": "sam3_local",
   "backends": [
+    {
+      "id": "sam3_local",
+      "type": "sam3_local",
+      "options": {
+        "python_path": "C:\\dlcv\\envs\\sam3\\python.exe",
+        "host": "127.0.0.1",
+        "port": 9892,
+        "score_threshold": 0.55,
+        "min_area": 64,
+        "epsilon_ratio": 0.001,
+        "nms_iou_threshold": 0.7,
+        "save_raw_mask": true,
+        "save_overlay": true,
+        "timeout": 180,
+        "startup_timeout": 600,
+        "capabilities": {
+          "instance_mask": true,
+          "text_guided_segmentation": true,
+          "confidence": true
+        }
+      }
+    },
     {
       "id": "mock",
       "type": "mock",
@@ -42,7 +64,12 @@
         "model": "gpt-image-2",
         "api_key_env": "AUTOLABEL_VISION_KEY",
         "size": "1024x1024",
+        "quality": "low",
+        "upload_format": "jpeg",
+        "jpeg_quality": 85,
+        "downscale_upload": true,
         "timeout": 180,
+        "http_proxy": "",
         "min_area": 64,
         "quantize": 8,
         "capabilities": {
@@ -58,7 +85,6 @@
         "grabcut_pad_px": 8,
         "grabcut_sure_fg_erode": 3,
         "grabcut_sure_bg_dilate": 8,
-        "prompt_extra": "Phone body only. Tight silhouette along the true outline of the handset chassis. Prefer slightly under-cover rather than over-cover. No halo, glow, soft edges, or outer stroke. Solid flat colors on pure black.",
         "merge_bbox_iou": 0.2,
         "merge_gap_px": 5,
         "merge_fragments": true,

@@ -93,6 +93,7 @@ def _ensure_builtins() -> None:
     from autolabel.inference import http_api as _http  # noqa: F401
     from autolabel.inference import dlcv_inference as _dlcv  # noqa: F401
     from autolabel.inference import openai_image_edits as _oie  # noqa: F401
+    from autolabel.inference import sam3_local as _sam3  # noqa: F401
 
 
 def load_backends_config(path: str | Path | None = None) -> Dict[str, Any]:

@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from typing import Iterable, List, Sequence, Tuple
 
+import cv2
+import numpy as np
+
 from autolabel.models import AffineStep, TransformMeta
 
 Point = Tuple[float, float]
@@ -45,6 +48,78 @@ def _apply_inverse_step(x: float, y: float, step: AffineStep) -> Point:
     sx = step.scale_x if step.scale_x else 1.0
     sy = step.scale_y if step.scale_y else 1.0
     return (x - step.pad_left) / sx, (y - step.pad_top) / sy
+
+
+def map_original_to_mask(x: float, y: float, meta: TransformMeta) -> Point:
+    """Inverse of ``map_mask_to_original``: original-image pixel → mask space."""
+    xi, yi = _apply_forward_step(x, y, meta.input_to_original)
+    return _apply_inverse_step(xi, yi, meta.mask_to_input)
+
+
+def _apply_forward_step_arr(x: np.ndarray, y: np.ndarray, step: AffineStep) -> Tuple[np.ndarray, np.ndarray]:
+    mode = (step.mode or "identity").lower()
+    if mode in ("identity", "none", ""):
+        return x, y
+    if mode == "stretch":
+        return x * float(step.scale_x or 1.0), y * float(step.scale_y or 1.0)
+    if mode == "letterbox":
+        scale = float(step.scale if step.scale is not None else step.scale_x or 1.0)
+        return x * scale + float(step.pad_left), y * scale + float(step.pad_top)
+    if mode == "crop":
+        crop = step.crop or {}
+        return x + float(crop.get("x", 0.0)), y + float(crop.get("y", 0.0))
+    return x * float(step.scale_x or 1.0) + float(step.pad_left), y * float(step.scale_y or 1.0) + float(step.pad_top)
+
+
+def _apply_inverse_step_arr(x: np.ndarray, y: np.ndarray, step: AffineStep) -> Tuple[np.ndarray, np.ndarray]:
+    mode = (step.mode or "identity").lower()
+    if mode in ("identity", "none", ""):
+        return x, y
+    if mode == "stretch":
+        sx = float(step.scale_x) if step.scale_x else 1.0
+        sy = float(step.scale_y) if step.scale_y else 1.0
+        return x / sx, y / sy
+    if mode == "letterbox":
+        scale = float(step.scale if step.scale is not None else step.scale_x or 1.0) or 1.0
+        return (x - float(step.pad_left)) / scale, (y - float(step.pad_top)) / scale
+    if mode == "crop":
+        crop = step.crop or {}
+        return x - float(crop.get("x", 0.0)), y - float(crop.get("y", 0.0))
+    sx = float(step.scale_x) if step.scale_x else 1.0
+    sy = float(step.scale_y) if step.scale_y else 1.0
+    return (x - float(step.pad_left)) / sx, (y - float(step.pad_top)) / sy
+
+
+def warp_mask_to_original(
+    mask: np.ndarray,
+    meta: TransformMeta,
+    *,
+    interpolation: int = cv2.INTER_NEAREST,
+) -> np.ndarray:
+    """Warp a mask-space binary map onto the original image using ``TransformMeta``.
+
+    Letterbox pads stay 0 (background). Stretch is anisotropic. Prefer this over
+    ``cv2.resize`` when the model canvas is square and the photo is not.
+    """
+    ow, oh = int(meta.original_size[0]), int(meta.original_size[1])
+    src = np.asarray(mask)
+    if src.ndim > 2:
+        src = src[:, :, 0]
+    src = (src > 0).astype(np.uint8)
+    if oh < 1 or ow < 1:
+        return np.zeros((max(oh, 0), max(ow, 0)), dtype=np.uint8)
+    yy, xx = np.indices((oh, ow), dtype=np.float32)
+    xi, yi = _apply_forward_step_arr(xx, yy, meta.input_to_original)
+    mx, my = _apply_inverse_step_arr(xi, yi, meta.mask_to_input)
+    warped = cv2.remap(
+        src,
+        mx,
+        my,
+        interpolation=int(interpolation),
+        borderMode=cv2.BORDER_CONSTANT,
+        borderValue=0,
+    )
+    return (warped > 0).astype(np.uint8)
 
 
 def map_mask_to_original(x: float, y: float, meta: TransformMeta) -> Point:
@@ -110,6 +185,37 @@ def build_letterbox_meta(
             pad_bottom=pad_bottom,
         ),
     )
+
+
+def letterbox_image_bgr(
+    image_bgr: np.ndarray,
+    canvas_wh: Tuple[int, int],
+    *,
+    fill: int = 0,
+) -> Tuple[np.ndarray, TransformMeta]:
+    """Fit ``image_bgr`` into a canvas with the same letterbox as ``build_letterbox_meta``."""
+    img = np.asarray(image_bgr)
+    if img.ndim == 2:
+        img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+    oh, ow = img.shape[:2]
+    cw, ch = int(canvas_wh[0]), int(canvas_wh[1])
+    meta = build_letterbox_meta((ow, oh), (cw, ch), (cw, ch))
+    canvas = np.full((ch, cw, 3), int(fill), dtype=np.uint8)
+    if ow < 1 or oh < 1 or cw < 1 or ch < 1:
+        return canvas, meta
+    step = meta.input_to_original
+    scale = float(step.scale if step.scale is not None else step.scale_x or 1.0)
+    nw = max(1, int(round(ow * scale)))
+    nh = max(1, int(round(oh * scale)))
+    interp = cv2.INTER_AREA if scale < 0.999 else cv2.INTER_LINEAR
+    resized = cv2.resize(img[:, :, :3], (nw, nh), interpolation=interp)
+    x0 = int(round(float(step.pad_left)))
+    y0 = int(round(float(step.pad_top)))
+    xs, ys = max(0, x0), max(0, y0)
+    x1, y1 = min(cw, x0 + nw), min(ch, y0 + nh)
+    if x1 > xs and y1 > ys:
+        canvas[ys:y1, xs:x1] = resized[ys - y0 : y1 - y0, xs - x0 : x1 - x0]
+    return canvas, meta
 
 
 def _forward_xy_scales(step: AffineStep) -> tuple[float, float]:

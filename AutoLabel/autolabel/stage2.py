@@ -18,11 +18,27 @@ from autolabel.scoring.risk import compute_quality_risk
 
 
 def stage1_to_shapes(
+
+
+
+
+
+
     result: Stage1Result,
     *,
     min_area: float = 64.0,
     min_area_space: str = "original",
     epsilon_ratio: float = 0.001,
+    close_ksize: int = 3,
+    open_ksize: int = 0,
+    keep_largest: bool = True,
+    instance_source: str = "model",
+    image_bgr: Optional[np.ndarray] = None,
+    grabcut: bool = False,
+    grabcut_iters: int = 3,
+    grabcut_pad_px: int = 8,
+    grabcut_sure_fg_erode: int = 3,
+    grabcut_sure_bg_dilate: int = 8,
 ) -> List[ShapeRecord]:
     ow, oh = result.transform.original_size
     use_grabcut = bool(grabcut) and image_bgr is not None
@@ -43,6 +59,7 @@ def stage1_to_shapes(
                 pad_px=grabcut_pad_px,
                 sure_fg_erode=grabcut_sure_fg_erode,
                 sure_bg_dilate=grabcut_sure_bg_dilate,
+                transform=result.transform,
             )
         polys = instance_mask_to_polygons(
             mask,

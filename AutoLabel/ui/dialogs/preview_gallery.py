@@ -10,6 +10,7 @@ from PyQt5.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QGridLayout,
+    QHBoxLayout,
     QLabel,
     QScrollArea,
     QSizePolicy,
@@ -199,8 +200,8 @@ class PreviewGalleryDialog(QDialog):
         layout.setContentsMargins(12, 12, 12, 12)
         layout.addWidget(title)
         hint = QLabel(
-            "请检查 polygon 是否贴合目标。点击缩略图可放大查看。"
-            "不满意请修改描述/换 backend，不要直接全量。"
+            "左图是 polygon overlay，右图（若有）是模型 raw mask / SAM3 overlay。"
+            "点击缩略图可放大。不满意请修改描述/换 backend，不要直接全量。"
         )
         hint.setObjectName("Hint")
         hint.setWordWrap(True)
@@ -219,33 +220,29 @@ class PreviewGalleryDialog(QDialog):
         self._cards = []
         for r in self._results:
             path = r.preview_overlay_path or r.image_path
-            img_label = _ClickableImageLabel(str(path))
-            img_label.setFixedSize(tw, th)
-            img_label.setAlignment(Qt.AlignCenter)
-            skipped = bool(getattr(r, "skipped", False))
-            border = "#c0392b" if skipped else "transparent"
-            img_label.setStyleSheet(
-                f"background:#111; border-radius:8px;"
-                f"border:2px solid {border};"
-            )
-            pix = QPixmap(str(path))
-            if not pix.isNull():
-                img_label.setPixmap(
-                    pix.scaled(tw, th, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-                )
-            else:
-                img_label.setText(Path(r.image_path).name)
+            img_label = self._thumb(str(path), tw, th, skipped=bool(getattr(r, "skipped", False)))
+            mask_path = getattr(r, "preview_mask_path", None)
+            thumbs = QWidget()
+            thumbs_row = QHBoxLayout(thumbs)
+            thumbs_row.setContentsMargins(0, 0, 0, 0)
+            thumbs_row.setSpacing(6)
+            thumbs_row.addWidget(img_label)
+            if mask_path:
+                mask_label = self._thumb(str(mask_path), tw, th, skipped=False)
+                thumbs_row.addWidget(mask_label)
             bucket = r.review.bucket if r.review else "-"
             note = ""
+            skipped = bool(getattr(r, "skipped", False))
             if skipped:
                 note = "\n审核拦截（已跳过，不进 Commit）"
             elif r.review and r.review.notes:
                 note = f"\n{r.review.notes[:80]}"
+            mask_hint = "  · 右图=raw mask" if mask_path else ""
             meta = QLabel(
                 f"{Path(r.image_path).name}\n"
                 f"shapes={len(r.shapes)}  bucket={bucket}"
                 f"{note}\n"
-                f"点击图片放大"
+                f"左图=overlay{mask_hint} · 点击放大"
             )
             meta.setObjectName("Hint")
             meta.setWordWrap(True)
@@ -253,10 +250,28 @@ class PreviewGalleryDialog(QDialog):
             card.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Maximum)
             col = QVBoxLayout(card)
             col.setContentsMargins(4, 4, 4, 4)
-            col.addWidget(img_label)
+            col.addWidget(thumbs)
             col.addWidget(meta)
             self._cards.append(card)
         self._relayout_cards()
+
+    def _thumb(self, path: str, tw: int, th: int, *, skipped: bool) -> QLabel:
+        img_label = _ClickableImageLabel(path)
+        img_label.setFixedSize(tw, th)
+        img_label.setAlignment(Qt.AlignCenter)
+        border = "#c0392b" if skipped else "transparent"
+        img_label.setStyleSheet(
+            f"background:#111; border-radius:8px;"
+            f"border:2px solid {border};"
+        )
+        pix = QPixmap(path)
+        if not pix.isNull():
+            img_label.setPixmap(
+                pix.scaled(tw, th, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            )
+        else:
+            img_label.setText(Path(path).name)
+        return img_label
 
     def _column_count(self) -> int:
         avail = self._scroll.viewport().width() if hasattr(self, "_scroll") else self.width()

@@ -7,7 +7,9 @@ from typing import Optional, Tuple
 import cv2
 import numpy as np
 
+from autolabel.geometry.transform import warp_mask_to_original
 from autolabel.mask.io import resize_mask_nn
+from autolabel.models import TransformMeta
 
 
 def _odd_ksize(ksize: int) -> int:
@@ -42,6 +44,7 @@ def grabcut_refine_mask(
     sure_fg_erode: int = 3,
     sure_bg_dilate: int = 8,
     min_area_ratio: float = 0.3,
+    transform: Optional[TransformMeta] = None,
 ) -> np.ndarray:
     """Refine a coarse instance mask against the original BGR image via GrabCut.
 
@@ -58,7 +61,10 @@ def grabcut_refine_mask(
         return _to_original_binary(mask, w, h)
 
     oh, ow = img.shape[:2]
-    seed = _to_original_binary(mask, ow, oh)
+    if transform is not None:
+        seed = warp_mask_to_original(mask, transform)
+    else:
+        seed = _to_original_binary(mask, ow, oh)
     seed_area = int(np.count_nonzero(seed))
     if seed_area <= 0 or oh < 2 or ow < 2:
         return seed
