@@ -1,8 +1,8 @@
 {
-  "active_backend": "sam3_local",
+  "annotation_engine": "sam3.1",
   "backends": [
     {
-      "id": "sam3_local",
+      "id": "sam3_1_local",
       "type": "sam3_local",
       "options": {
         "python_path": "C:\\dlcv\\envs\\sam3\\python.exe",
@@ -20,38 +20,9 @@
           "instance_mask": true,
           "text_guided_segmentation": true,
           "confidence": true
-        }
-      }
-    },
-    {
-      "id": "mock",
-      "type": "mock",
-      "options": {
-        "mode": "letterbox",
-        "model_input": [
-          640,
-          640
-        ],
-        "mask_scale": 0.25,
-        "n_instances": 2,
-        "adjacent": true,
-        "with_scores": true,
-        "seed": 0
-      }
-    },
-    {
-      "id": "http_seg",
-      "type": "http_api",
-      "options": {
-        "base_url": "",
-        "endpoint": "/v1/segment",
-        "api_key_env": "AUTOLABEL_VISION_KEY",
-        "model": "",
-        "capabilities": {
-          "instance_mask": true,
-          "confidence": true,
-          "text_guided_segmentation": true
-        }
+        },
+        "base_url": "http://127.0.0.1:9892",
+        "sam3_version": "sam3.1"
       }
     },
     {
@@ -69,7 +40,7 @@
         "jpeg_quality": 85,
         "downscale_upload": true,
         "timeout": 240,
-        "http_proxy": "http://127.0.0.1:7890",
+        "http_proxy": "",
         "min_area": 128,
         "quantize": 8,
         "merge_fragments": true,
@@ -90,18 +61,23 @@
         "grabcut_sure_fg_erode": 0,
         "grabcut_sure_bg_dilate": 0,
         "merge_gap_px": 2
-      }
+      },
+      "label": "gpt-image-2"
     },
     {
-      "id": "dlcv_9890",
-      "type": "dlcv",
+      "id": "mock",
+      "type": "mock",
       "options": {
-        "base_url": "http://127.0.0.1:9890",
-        "model_path": "",
-        "capabilities": {
-          "instance_mask": true,
-          "confidence": true
-        }
+        "mode": "letterbox",
+        "model_input": [
+          640,
+          640
+        ],
+        "mask_scale": 0.25,
+        "n_instances": 2,
+        "adjacent": true,
+        "with_scores": true,
+        "seed": 0
       }
     }
   ]

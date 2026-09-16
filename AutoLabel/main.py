@@ -6,11 +6,14 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent
-PROJECT_ROOT = ROOT.parent
-for p in (str(ROOT), str(PROJECT_ROOT)):
-    if p not in sys.path:
-        sys.path.insert(0, p)
+if getattr(sys, "frozen", False):
+    ROOT = Path(sys.executable).resolve().parent
+else:
+    ROOT = Path(__file__).resolve().parent
+    PROJECT_ROOT = ROOT.parent
+    for p in (str(ROOT), str(PROJECT_ROOT)):
+        if p not in sys.path:
+            sys.path.insert(0, p)
 
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QFont

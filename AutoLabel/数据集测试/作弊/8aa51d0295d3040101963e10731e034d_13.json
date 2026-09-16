@@ -1,12 +1,12 @@
 {
-  "version": "2025.9.1.0",
+  "version": "2026.7.17.0",
   "flags": {},
   "shapes": [
     {
-      "label": "手机",
+      "label": "phone",
       "points": [
         [
-          252.0,
+          253.0,
           302.0
         ],
         [
@@ -18,16 +18,8 @@
           303.0
         ],
         [
-          245.0,
-          306.0
-        ],
-        [
-          245.0,
+          244.0,
           308.0
-        ],
-        [
-          243.0,
-          311.0
         ],
         [
           242.0,
@@ -84,10 +76,6 @@
         [
           255.0,
           303.0
-        ],
-        [
-          253.0,
-          303.0
         ]
       ],
       "group_id": null,
@@ -96,8 +84,9 @@
       "flags": {
         "autolabel": true,
         "quality_risk": 0.0,
-        "score_source": "none",
-        "instance_source": "model"
+        "score_source": "model",
+        "instance_source": "model",
+        "model_confidence": 0.6484375
       },
       "mask": null
     }
@@ -105,5 +94,8 @@
   "imagePath": "8aa51d0295d3040101963e10731e034d_13.jpg",
   "imageData": null,
   "imageHeight": 640,
-  "imageWidth": 480
+  "imageWidth": 480,
+  "img_name_list": [
+    "8aa51d0295d3040101963e10731e034d_13.jpg"
+  ]
 }

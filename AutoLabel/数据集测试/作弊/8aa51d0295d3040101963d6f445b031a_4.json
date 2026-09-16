@@ -3,7 +3,7 @@
   "flags": {},
   "shapes": [
     {
-      "label": "手机",
+      "label": "phone",
       "points": [
         [
           385.0,
@@ -100,8 +100,77 @@
       "flags": {
         "autolabel": true,
         "quality_risk": 0.0,
-        "score_source": "none",
-        "instance_source": "model"
+        "score_source": "model",
+        "instance_source": "model",
+        "model_confidence": 0.88671875
+      },
+      "mask": null
+    },
+    {
+      "label": "phone",
+      "points": [
+        [
+          265.0,
+          448.0
+        ],
+        [
+          264.0,
+          448.0
+        ],
+        [
+          260.0,
+          456.0
+        ],
+        [
+          250.0,
+          466.0
+        ],
+        [
+          250.0,
+          468.0
+        ],
+        [
+          252.0,
+          470.0
+        ],
+        [
+          255.0,
+          470.0
+        ],
+        [
+          256.0,
+          469.0
+        ],
+        [
+          259.0,
+          469.0
+        ],
+        [
+          260.0,
+          468.0
+        ],
+        [
+          264.0,
+          468.0
+        ],
+        [
+          266.0,
+          467.0
+        ],
+        [
+          266.0,
+          450.0
+        ]
+      ],
+      "group_id": null,
+      "description": null,
+      "shape_type": "polygon",
+      "flags": {
+        "autolabel": true,
+        "quality_risk": 0.0,
+        "score_source": "model",
+        "instance_source": "model",
+        "model_confidence": 0.251953125
       },
       "mask": null
     }

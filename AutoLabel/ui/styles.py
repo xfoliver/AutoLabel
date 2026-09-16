@@ -52,9 +52,21 @@ QLabel#Subtitle {{
     color: #6e7a8a;
     font-size: {f(13)}px;
 }}
+QLabel#Notice {{
+    background: #f6f3ff;
+    color: #4a3d78;
+    border: 1px solid #e0d8ff;
+    border-left: {p(4, 3)} solid #6c4cff;
+    border-radius: {p(10, 6)};
+    padding: {p(10, 6)} {p(14, 8)};
+    font-size: {f(12)}px;
+}}
 QLabel#Hint {{
     color: #7b8798;
     font-size: {f(12)}px;
+}}
+QLabel#SectionTitle, QLabel#PageTitle, QLabel#BrandTitle {{
+    min-width: 0px;
 }}
 QLabel#SectionTitle {{
     font-size: {f(16)}px;
@@ -88,11 +100,17 @@ QLabel#StepCircle {{
 QWidget#Sidebar {{
     background: rgba(255,255,255,200);
     border-right: 1px solid #e8ebf2;
+    min-width: 0px;
+}}
+QStackedWidget, QScrollArea, QScrollArea > QWidget > QWidget {{
+    min-width: 0px;
+    background: transparent;
 }}
 QWidget#Card, QFrame#Card {{
     background: rgba(255,255,255,230);
     border: 1px solid #e8ebf2;
     border-radius: {p(16, 10)};
+    min-width: 0px;
 }}
 QWidget#BackendCard {{
     background: #ffffff;
@@ -131,6 +149,7 @@ QPushButton#Primary:hover, QPushButton#StartBtn:hover {{
 }}
 QPushButton#StartBtn {{
     min-height: {p(52, 40)};
+    min-width: {p(140, 110)};
     font-size: {f(16)}px;
 }}
 QPushButton#Ghost {{
@@ -142,6 +161,29 @@ QPushButton#Ghost {{
 QPushButton#Ghost:hover {{
     background: #f2f4f8;
 }}
+QPushButton#Secondary {{
+    background: #f6f3ff;
+    border: 1px solid #c9c0ff;
+    border-radius: {p(10, 6)};
+    padding: {p(8, 4)} {p(14, 8)};
+    color: #5a3ad8;
+    font-weight: 750;
+    font-size: {f(13)}px;
+    min-height: {p(32, 26)};
+}}
+QPushButton#Secondary:hover {{
+    background: #ece6ff;
+    border-color: #6c4cff;
+    color: #4a2fd0;
+}}
+QPushButton#Secondary:pressed {{
+    background: #e0d8ff;
+}}
+QPushButton#Secondary:disabled {{
+    color: #a3acbb;
+    background: #f7f8fb;
+    border-color: #e8ebf2;
+}}
 QPushButton#Nav {{
     background: transparent;
     border: none;
@@ -152,6 +194,7 @@ QPushButton#Nav {{
     font-size: {f(14)}px;
     font-weight: 600;
     min-height: {p(44, 32)};
+    min-width: 0px;
 }}
 QPushButton#Nav:hover {{
     background: #f6f5ff;
@@ -171,6 +214,7 @@ QPushButton#Chip {{
     color: #536071;
     font-size: {f(12)}px;
     min-height: {p(26, 20)};
+    min-width: 0px;
 }}
 QPushButton#Chip:hover, QPushButton#Chip:checked {{
     border-color: #bdb2ff;
@@ -190,6 +234,7 @@ QLineEdit, QTextEdit, QPlainTextEdit, QComboBox, QSpinBox, QDoubleSpinBox {{
     selection-background-color: #6c4cff;
     font-size: {f(13)}px;
     min-height: {p(28, 22)};
+    min-width: 0px;
     color: #344054;
 }}
 QTextEdit:focus, QLineEdit:focus, QPlainTextEdit:focus {{
@@ -243,15 +288,19 @@ QGroupBox {{
     background: rgba(255,255,255,230);
     border: 1px solid #e8ebf2;
     border-radius: {p(16, 10)};
-    margin-top: {p(8, 4)};
-    padding: {p(12, 6)};
+    margin-top: {p(22, 16)};
+    padding-top: {p(16, 12)};
+    padding-right: {p(12, 6)};
+    padding-bottom: {p(12, 6)};
+    padding-left: {p(12, 6)};
     font-weight: 600;
     font-size: {f(12)}px;
 }}
 QGroupBox::title {{
     subcontrol-origin: margin;
+    subcontrol-position: top left;
     left: {p(12, 6)};
-    padding: 0 {p(6, 3)};
+    padding: 0 {p(8, 4)};
     color: #5c6578;
 }}
 QLabel#Toast {{

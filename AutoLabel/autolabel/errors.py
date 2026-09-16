@@ -9,6 +9,10 @@ class IntentError(ValueError):
     """Intent / label parsing failed; do not invent labels locally."""
 
 
+class NameSuggestError(RuntimeError):
+    """Vision name-suggest failed; do not invent English SAM prompts."""
+
+
 class ImageModerationBlocked(RuntimeError):
     """Vision backend rejected one image via safety moderation; skip and continue."""
 

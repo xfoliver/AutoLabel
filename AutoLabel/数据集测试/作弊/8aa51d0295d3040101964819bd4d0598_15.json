@@ -1,9 +1,9 @@
 {
-  "version": "2025.9.1.0",
+  "version": "2026.7.17.0",
   "flags": {},
   "shapes": [
     {
-      "label": "手机",
+      "label": "phone",
       "points": [
         [
           317.0,
@@ -39,11 +39,19 @@
         ],
         [
           312.0,
-          230.0
+          231.0
         ],
         [
           311.0,
-          231.0
+          232.0
+        ],
+        [
+          311.0,
+          237.0
+        ],
+        [
+          310.0,
+          238.0
         ],
         [
           310.0,
@@ -110,6 +118,10 @@
           279.0
         ],
         [
+          334.0,
+          278.0
+        ],
+        [
           335.0,
           276.0
         ],
@@ -147,11 +159,11 @@
         ],
         [
           340.0,
-          246.0
+          247.0
         ],
         [
           341.0,
-          245.0
+          246.0
         ],
         [
           341.0,
@@ -160,14 +172,6 @@
         [
           342.0,
           240.0
-        ],
-        [
-          342.0,
-          236.0
-        ],
-        [
-          343.0,
-          235.0
         ],
         [
           343.0,
@@ -215,22 +219,19 @@
       "shape_type": "polygon",
       "flags": {
         "autolabel": true,
-        "quality_risk": 0.055,
-        "score_source": "none",
-        "instance_source": "model"
+        "quality_risk": 0.06,
+        "score_source": "model",
+        "instance_source": "model",
+        "model_confidence": 0.8984375
       },
       "mask": null
     },
     {
-      "label": "手机",
+      "label": "phone",
       "points": [
         [
           264.0,
           233.0
-        ],
-        [
-          262.0,
-          232.0
         ],
         [
           258.0,
@@ -261,16 +262,24 @@
           248.0
         ],
         [
-          244.0,
+          249.0,
+          249.0
+        ],
+        [
+          248.0,
+          254.0
+        ],
+        [
+          246.0,
+          256.0
+        ],
+        [
+          245.0,
           260.0
         ],
         [
-          244.0,
-          262.0
-        ],
-        [
           241.0,
-          266.0
+          267.0
         ],
         [
           241.0,
@@ -315,8 +324,9 @@
       "flags": {
         "autolabel": true,
         "quality_risk": 0.0,
-        "score_source": "none",
-        "instance_source": "model"
+        "score_source": "model",
+        "instance_source": "model",
+        "model_confidence": 0.8359375
       },
       "mask": null
     }
@@ -324,5 +334,8 @@
   "imagePath": "8aa51d0295d3040101964819bd4d0598_15.jpg",
   "imageData": null,
   "imageHeight": 640,
-  "imageWidth": 480
+  "imageWidth": 480,
+  "img_name_list": [
+    "8aa51d0295d3040101964819bd4d0598_15.jpg"
+  ]
 }

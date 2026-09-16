@@ -1,11 +1,11 @@
 {
-  "prompt": "phone",
+  "prompt": "person",
   "image_path": "C:\\Users\\Admin\\kimi_gui_automation\\AutoLabel\\数据集测试\\作弊\\8aa51d0295d30401019642faddb2045b_11.jpg",
   "image_size": [
     480,
     640
   ],
-  "score_threshold": 0.55,
+  "score_threshold": 0.6,
   "exif_orientation": null,
   "pil_raw_size_wh": [
     480,
@@ -20,12 +20,12 @@
     {
       "score": null,
       "bbox": [
-        164.11285400390625,
-        218.800537109375,
-        195.66123962402344,
-        285.09124755859375
+        151.8770294189453,
+        116.03689575195312,
+        425.5610656738281,
+        584.1753540039062
       ],
-      "area": 1422
+      "area": 64708
     }
   ]
 }

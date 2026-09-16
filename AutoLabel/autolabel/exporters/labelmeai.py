@@ -12,6 +12,7 @@ from autolabel.exporters.schema_v1 import (
     FLAG_INSTANCE_SOURCE,
     FLAG_MODEL_CONFIDENCE,
     FLAG_QUALITY_RISK,
+    FLAG_QUALITY_STATUS,
     FLAG_SCORE_SOURCE,
     ISEG_SHAPE_TYPE,
 )
@@ -27,6 +28,8 @@ def shape_to_dict(shape: ShapeRecord) -> Dict[str, Any]:
     }
     if shape.model_confidence is not None:
         flags[FLAG_MODEL_CONFIDENCE] = float(shape.model_confidence)
+    if shape.quality_status:
+        flags[FLAG_QUALITY_STATUS] = str(shape.quality_status)
 
     return {
         "label": shape.label,

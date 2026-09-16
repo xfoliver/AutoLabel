@@ -1,152 +1,340 @@
-# AutoLabel（自动标注 MVP）
+# AutoLabel
 
-与 `autotrain4/` 平级的 **实例分割（ISEG）自动标注** 工具：自然语言 / 表单 → 能力校验 → 计划确认 → 试标 3～5 张 → 全量 AI mask → 确定性几何 → LabelMeAI 旁路 JSON → 复核清单 → Commit。
+自然语言 / 短类别名 → 实例分割自动标注。输出 **LabelMe 兼容 JSON**（与图片同名旁路文件），可直接进 LabelMe / LabelMeAI 复核。
 
-设计依据：仓库根目录 `自动化标注.md`。
+标注引擎：**SAM3.1**（本机内置）以及设置里用 Base URL / API Key 自行添加的视觉模型。主进程不加载 SAM3 / torch。SAM3 权重不随软件分发（电脑上的模型文件保持不动）。
 
-默认视觉后端是 **SAM3 local worker**（独立 Conda 环境 + HTTP）。旧的 `gpt_image_mask` 仍保留，可随时切回。
+```
+用户（GUI / CLI）
+  → Intent（LLM 可选）  label=显示名, model_prompt=视觉描述
+  → Capability Check
+  → Plan（扫图、跳过已有 JSON）
+  → Preview 3～5 张
+  → 确认
+  → Batch 全量
+  → work JSON + overlay
+  → Commit 旁路 JSON 到数据集目录
+```
+
+---
 
 ## 快速开始
 
 ```bash
-# 依赖（可与 pyqt_frontend 共用环境）
+# 1. 依赖（AutoLabel 主进程环境，不要用 sam3 Conda）
 pip install -r AutoLabel/requirements.txt
 
-# 单测
+# 2. 本地配置（不要提交密钥）
+copy AutoLabel\config\settings.example.json AutoLabel\config\settings.json
+copy AutoLabel\config\backends.example.json AutoLabel\config\backends.json
+
+# 3. 单测
 python -m pytest AutoLabel/tests -q
 
-# CLI（MockBackend，无需 GPU）
-python AutoLabel/cli.py --dataset <图片目录> --label 王不留行 --description "圆粒药材" --preview --backend mock
-python AutoLabel/cli.py --dataset <图片目录> --label 王不留行 --preview --batch --yes --backend mock
-
-# CLI（SAM3：需 sam3 Conda + Worker）
-python AutoLabel/cli.py --dataset <图片目录> --label 手机 --intent-mode simple --preview --backend sam3_local
-
-# PyQt 前端
+# 4. GUI
 python AutoLabel/main.py
+
+# 5. CLI（Mock，无需 GPU）
+python AutoLabel/cli.py --dataset <图片目录> --label target --description "visual description" --preview --backend mock
 ```
 
-## SAM3 架构（默认）
+SAM3.1 实标需要：
 
-SAM3 官方仓库 `sam3/` **禁止修改**。AutoLabel 主进程也 **禁止 import sam3 / torch**。
+1. 仓库旁有官方 `sam3/`（**禁止修改**；SAM 3.1 与 SAM3 共用这套推理代码）
+2. Conda 环境 `C:\dlcv\envs\sam3\python.exe` 已装好 SAM3
+3. `backends.json` 的 `annotation_engine` 为 `sam3.1`
+4. 本机有 `models/sam3.1_multiplex.pt`（仓库根 `models/` 或便携包 `models/`）
 
-```
-用户
-↓
-AutoLabel UI / CLI
-↓
-Intent（LLM 可选）→ label=手机, model_prompt=phone
-↓
-sam3_local backend  (HTTP only)
-↓
-127.0.0.1:9892  SAM3 Worker   ← C:\dlcv\envs\sam3\python.exe
-↓
-SAM3  binary masks + boxes + scores
-↓
-score / area / NMS
-↓
-findContours → approxPolyDP → LabelMe JSON → Preview
+启动 GUI 后会探测 `http://127.0.0.1:9892/health`；未运行则自动拉起 Worker，等 `model_loaded=true` 再推理。关闭 GUI 时会结束**本程序拉起**的 Worker。
+
+Windows 便携包（无 Python / Conda）见仓库 `packaging/README_PORTABLE.md`。构建：
+
+```bat
+packaging\build_portable.bat
 ```
 
-Worker 模型只加载一次并常驻。启动 AutoLabel 后：
+---
 
-1. 探测 `http://127.0.0.1:9892/health`
-2. 若未运行，用 `C:\dlcv\envs\sam3\python.exe AutoLabel\sam3_worker\server.py` 拉起
-3. 等 `model_loaded=true` 再推理
+## 目录结构
 
-单独验证（Stage A / B）：
-
-```bash
-# Stage A 单张
-C:\dlcv\envs\sam3\python.exe AutoLabel\sam3_worker\run_once.py --image D:\data\001.jpg --prompt phone
-
-# Stage B 常驻
-C:\dlcv\envs\sam3\python.exe AutoLabel\sam3_worker\server.py --host 127.0.0.1 --port 9892
+```
+AutoLabel/
+├── main.py                 # PyQt GUI
+├── cli.py                  # 无头 CLI
+├── requirements.txt
+├── config/
+│   ├── settings.example.json
+│   ├── backends.example.json
+│   ├── settings.json       # 本地，gitignore
+│   └── backends.json       # 本地，gitignore
+├── autolabel/              # 编排、几何、导出（禁止 import sam3/torch）
+├── sam3_worker/            # 仅用 sam3 Conda 启动的 HTTP 服务
+├── ui/                     # PyQt 界面
+├── tests/
+├── fixtures/golden/        # LabelMe JSON 金样
+└── runs/                   # Worker 日志 / 一次性推理输出（本地）
 ```
 
-切 backend：编辑 `AutoLabel/config/backends.json` 的 `active_backend`：
+一次 run 写在数据集旁，不覆盖原图：
 
-| 值 | 说明 |
-|----|------|
-| `sam3_local` | 默认。HTTP → SAM3 Worker |
-| `gpt_image_mask` | 旧 GPT Image 彩色 mask 路径 |
-| `mock` | 本地合成，开发 / 单测 |
+```
+<dataset>/work/autolabel/autolabel-YYYYMMDD_HHMMSS/
+├── meta/intent.json, plan.json
+├── preview/                # 试标 JSON
+├── json/                   # 全量 work JSON
+├── stage1/                 # transform、raw mask、debug
+├── overlays/
+└── report/                 # 复核队列、commit 清单
+```
 
-## 双通道配置（LLM + Vision）
+Commit 后才会把 JSON 拷到图片同级：`foo.jpg` → `foo.json`。默认 `skip_existing`，已有旁路文件不覆盖。
 
-AutoLabel 使用 **两套独立配置**，不要混用 Key 字段：
+---
 
-| 通道 | 配置位置 | 用途 |
-|------|----------|------|
-| **LLM** | `config/settings.json` 的 `llm_*` | 自然语言意图 / LabelSpec（可选） |
-| **Vision** | `config/backends.json` 的 active backend | 出 instance mask |
+## 环境
 
-`intent_mode`（settings.json）：
+| 进程 | Python | 职责 |
+|------|--------|------|
+| AutoLabel GUI / CLI | 普通环境（PyQt5、opencv、requests、openai） | 任务、Intent、后处理、LabelMe、UI |
+| SAM3 Worker | `C:\dlcv\envs\sam3\python.exe` | 加载 SAM3 一次并常驻，HTTP 推理 |
 
-- `auto`：短词（phone / 手机）跳过 LLM；长句走 LLM，失败则回退 simple
-- `simple`：永远不调用 LLM
-- `llm`：必须走 LLM
+约束：
 
-`config/settings.json` 与 `config/backends.json` **已 gitignore**（只提交 `*.example.json`）。
+- **不要改** 仓库根目录旁的 `sam3/` 官方代码
+- AutoLabel 主进程 **禁止** `import sam3` / `import torch`
+- 不要把 AutoLabel 业务文件塞进 `sam3/`
+- Worker 只绑定 `127.0.0.1`，模型常驻；禁止每张图重新 load
 
-## 换模型 / API
+SAM3 环境里需要能 `import sam3`（官方仓库在 `PYTHONPATH` 上）。Worker 启动时会把 `AutoLabel/` 与 `../sam3` 注入子进程 `PYTHONPATH`，并清掉父进程的 `PYTHONPATH`，避免 PyQt / 错误的 torch 泄漏进去。
 
-编辑 `AutoLabel/config/backends.json`（可从 `backends.example.json` 复制）：
+---
 
-| id | type | 说明 |
-|----|------|------|
-| `sam3_local` | `sam3_local` | 本地 SAM3 Worker（默认） |
-| `mock` | `mock` | 本地合成 instance mask |
-| `http_seg` | `http_api` | 任意返回 instance mask 的 HTTP API |
-| `gpt_image_mask` | `openai_image_edits` | OpenAI 兼容 `/images/edits`：彩色 Mask → 本地拆实例 |
-| `dlcv_9890` | `dlcv` | 本地 `http://127.0.0.1:9890` InferenceClient |
-| `bad_vlm` | `no_instance` | 负例：Capability Check 会拒绝 |
+## 配置
 
-### gpt-image-2 Mask 约定（旧路径，仍可用）
+两套配置分开，**不要混用 Key**。
 
-- 请求：multipart `model` + `prompt` + `image` → `POST {base_url}/images/edits`
-- 响应：`data[0].b64_json` 黑底彩色 PNG；**每个实例一种纯色**（当前按单类处理）
-- 本地：量化颜色 → `InstancePred` → 现有 Stage2 polygon / LabelMeAI
-- 无 per-instance confidence → 结果进抽检/复核，不做高置信自动接受
-- API 返回尺寸可能与请求 `size` 不一致；用 stretch `TransformMeta` 映回原图
-- 贴边可调（`backends.json` → `gpt_image_mask.options`）：`grabcut`（默认 true，原图 GrabCut 贴边）、`grabcut_iters` / `grabcut_pad_px` / `grabcut_sure_fg_erode` / `grabcut_sure_bg_dilate`、`quantize`（默认 8）、`epsilon_ratio`（默认 0.0005）、`mask_close_ksize` / `mask_open_ksize`（默认 0，避免肥边）；更大 `size` 通常更贴边但更贵
-- **目标语义不要写进 backend config**。类别 / 描述 / 排除项走 UI 或 CLI 的 `label` / `description` / `exclude`（进入 LabelSpec）。`prompt_extra` 仅作可选空字段，默认不注入任何领域文本
+| 通道 | 文件 | 用途 |
+|------|------|------|
+| LLM | `config/settings.json` | 自然语言 → Intent（短 `label` + 英文 `model_prompt`） |
+| Vision | `config/backends.json` | 选哪个分割后端、阈值、Worker 路径 |
 
-### HTTP API 约定（可换厂商）
+`settings.json` / `backends.json` 已在仓库根 `.gitignore`。提交只用 `*.example.json`。也可复用 `../pyqt_frontend/settings.json`。
 
-`POST {base_url}/v1/segment`
+### LLM（`settings.json`）
 
 ```json
 {
-  "model": "...",
-  "image_base64": "...",
-  "label_spec": { "class_names": ["..."], "targets": [...] }
+  "llm_base_url": "http://127.0.0.1:3000/v1",
+  "llm_api_key": "",
+  "llm_model": "kimi-k3",
+  "llm_protocol": "openai",
+  "intent_mode": "auto"
 }
 ```
 
-响应需含 `instances[].mask_png_base64` 与建议的 `transform`（TransformMeta）。**谁做 resize/letterbox，谁就必须返回 TransformMeta**。
+`intent_mode`：
 
-## 流程闸门
+| 值 | 行为 |
+|----|------|
+| `auto` | 短名词走 simple；句子才调 LLM |
+| `llm` | 始终走 LLM |
+| `simple` | 不调 LLM，把输入当类别名 |
 
-1. **Capability Check**：ISEG 要求 `instance_mask=true`
-2. **Plan Preview**：烧算力前可改意图
-3. **试标确认**：未确认不能全量
-4. **Commit**：先写 `work/autolabel/<run_id>/`，确认后才旁路 `图片.json`；默认 **skip 已有 JSON**
-5. 无 `model_confidence` 时不做「高置信自动接受」，全部进抽检/复核桶
+「AI 识别名称」从数据集里随机抽最多 5 张图，一次发给模型，由它自己写出给 SAM3.1 的英文 prompt。设置里填 `gpt-image-2` 即可，内部自动改走 `gpt-4o` 看图，不生成 mask。
 
-## 目录
+Intent 规则：`label` 是 LabelMe 显示名；发给 SAM3 的是 `model_prompt`（用户或「AI 识别名称」给出的视觉描述，代码不改写成固定词表）。整句任务指令不要塞进 prompt。GUI 短名称只改 LabelMe 类别，不会覆盖已经很好的 `model_prompt`。Worker 按 0.05 召回，再用最小面积过滤过小连通域；置信度滑条不再把整张图打空。
 
-```text
-AutoLabel/
-  main.py cli.py
-  autolabel/          # 领域库（含 inference/sam3_local.py HTTP 客户端）
-  sam3_worker/        # 独立 SAM3 进程（必须用 sam3 Conda 启动）
-  ui/                 # PyQt（顶栏 / 侧栏 / 新建任务 demo 布局）
-  config/backends.json
-  runs/sam3/          # Worker debug mask / overlay
-  tests/ fixtures/
+### 标注引擎（`backends.json`）
+
+设置页的 **标注引擎**（`annotation_engine`）只有两项：
+
+| 引擎 | 内部 id | 行为 |
+|------|---------|------|
+| SAM3 | `sam3_local` | 本机 Worker 文本 prompt 实例分割 |
+| chat-image | `gpt_image_mask` | `/images/edits` 彩色 mask → 拆实例 |
+
+CLI `--backend mock` 仍可用于无 GPU 测试。
+
+SAM3 常用选项（`sam3_local.options`）：
+
+| 字段 | 默认 | 含义 |
+|------|------|------|
+| `python_path` | `C:\dlcv\envs\sam3\python.exe` | Worker 解释器 |
+| `host` / `port` | `127.0.0.1` / `9892` | 只监听本机 |
+| `score_threshold` | `0.55` | 复核用。SAM3 实际按 0.05 召回；低分目标不再被滑条直接打空 |
+| `min_area` | `64` | 丢掉过小连通域（px）。GUI 滑条上限 16384 |
+| `nms_iou_threshold` | `0.7` | bbox NMS |
+| `epsilon_ratio` | `0.001` | 轮廓多边形简化 |
+| `startup_timeout` | `600` | 等模型加载（秒） |
+| `timeout` | `180` | 单张推理超时 |
+
+GUI 设置页可改 LLM 与当前 backend；置信度 / 最小面积也可在「新建任务」高级选项里临时覆盖。
+
+---
+
+## GUI
+
+```bash
+python AutoLabel/main.py
 ```
 
-## 非目标（本版）
+四步：
 
-CLS/DET/OCR/SSEG 真实实现、像素级复核编辑器、Stage1 直接吐 polygon、多类别色表图例、用图像模型做样本生成。
+1. **新建任务**：选图片文件夹 → 自然语言或短名（可用「AI 识别名称」）→ 可选阈值
+2. **预览标注**：试标若干张，看 overlay / JSON，确认质量
+3. **批量处理**：试标确认后才允许全量（安全闸）
+4. **结果导出**：Commit 旁路 JSON 到数据集；未确认不写原目录
+
+侧栏「检查连接」探测 SAM3 `/health`。首次加载模型可能要几分钟，状态会从 `loading` 变为 `ok`。
+
+---
+
+## CLI
+
+在仓库根目录执行（`cli.py` 会把 `AutoLabel/` 与仓库根加入 `sys.path`）。
+
+```bash
+# 只出 Plan
+python AutoLabel/cli.py --dataset D:\data\images --label target --plan-only --backend sam3_local
+
+# 试标
+python AutoLabel/cli.py --dataset D:\data\images --label target --preview --backend sam3_local --intent-mode simple
+
+# 试标 + 全量（必须 --yes）
+python AutoLabel/cli.py --dataset D:\data\images --label target --preview --batch --yes --backend sam3_local
+
+# 全量后 Commit 旁路 JSON
+python AutoLabel/cli.py --dataset D:\data\images --label target --preview --batch --yes --commit --backend sam3_local
+
+# Mock 不碰 GPU
+python AutoLabel/cli.py --dataset D:\data\images --label target --preview --backend mock
+```
+
+常用参数：
+
+| 参数 | 说明 |
+|------|------|
+| `--dataset` | 图片目录（递归扫图，跳过 `work/`） |
+| `--label` / `--description` / `--exclude` | 手工 Intent |
+| `--prompt` | 自然语言，覆盖手工字段 |
+| `--backend` | 覆盖引擎：`sam3` / `chat-image`，或内部 id（`sam3_local` / `gpt_image_mask` / `mock`） |
+| `--intent-mode` | `auto` / `llm` / `simple` |
+| `--score-threshold` / `--min-area` | 覆盖 SAM3 过滤 |
+| `--preview-count` | 试标张数，默认 5 |
+| `--yes` | 确认试标，允许 `--batch` |
+| `--commit` | 把 work JSON 写成图片旁路文件 |
+
+全量没有 `--yes` 会退出码 `3`。已有同名 JSON 默认跳过。
+
+---
+
+## SAM3 Worker
+
+主进程只走 HTTP。Worker 由 `autolabel/sam3_worker_ctl.py` 按需拉起。
+
+手动验证：
+
+```bash
+# Stage A：单张（会当场 load 模型）
+C:\dlcv\envs\sam3\python.exe AutoLabel\sam3_worker\run_once.py --image D:\data\001.jpg --prompt "<text prompt>"
+
+# Stage B：常驻
+C:\dlcv\envs\sam3\python.exe AutoLabel\sam3_worker\server.py --host 127.0.0.1 --port 9892
+```
+
+接口：
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/health` | `{status, model_loaded, device}`；加载中 `status=loading` |
+| POST | `/segment` | `{image_path, prompt, score_threshold, run_dir}` → instances（mask / bbox / score） |
+
+环境变量：`SAM3_WORKER_HOST`、`SAM3_WORKER_PORT`、`SAM3_WORKER_RUNS`。日志默认 `AutoLabel/runs/sam3/worker.log`。
+
+---
+
+## 标注流水线
+
+1. **Intent**：短 `label` + `model_prompt` + 可选 exclude / description
+2. **Plan**：列图、统计已有 JSON、检查 backend 能力（无实例 mask 则硬失败）
+3. **Stage 1**：backend 出 per-instance binary mask + score + bbox
+4. **Stage 2**：形态学 / 可选 GrabCut（GPT Image 路径）、`findContours` → `approxPolyDP` → 面积过滤
+5. **Export**：LabelMe polygon JSON（`imageData=null`，坐标为原图像素）
+6. **Review**：按置信度 / 质量风险分桶，写入 `report/`
+7. **Commit**：work JSON → `<stem>.json` 旁路
+
+图片读入会做 EXIF 方向校正，多边形写回校正后的宽高。`work/` 与 `__pycache__` 不会当数据集扫进去。
+
+支持的图片后缀：`.jpg` `.jpeg` `.png` `.bmp` `.tif` `.tiff` `.webp` `.gif`。
+
+---
+
+## 输出 JSON
+
+与 LabelMe 5.x 对齐，shape 为 polygon：
+
+```json
+{
+  "version": "5.0.1",
+  "flags": {},
+  "shapes": [
+    {
+      "label": "target",
+      "points": [[10.0, 20.0], [80.0, 20.0], [80.0, 90.0]],
+      "group_id": 0,
+      "shape_type": "polygon",
+      "flags": {
+        "autolabel": true,
+        "model_confidence": 0.91,
+        "quality_risk": 0.12
+      },
+      "mask": null
+    }
+  ],
+  "imagePath": "001.jpg",
+  "imageData": null,
+  "imageHeight": 1080,
+  "imageWidth": 1920
+}
+```
+
+审核被拦的图会记空 JSON + `moderation_blocked`，**不会 Commit**。
+
+---
+
+## 测试
+
+```bash
+python -m pytest AutoLabel/tests -q
+```
+
+覆盖导出金样、capability、mock 流水线、SAM3 client/NMS、Worker 拉起、几何 / EXIF、GrabCut、UI 缩放等。GUI 在 `QT_QPA_PLATFORM=offscreen` 下不会去探 9892。
+
+---
+
+## 依赖
+
+主进程见 `requirements.txt`：PyQt5、numpy、opencv-python、Pillow、requests、openai、python-dotenv、tqdm、pytest。
+
+SAM3 Worker 额外需要官方 `sam3` 及其 CUDA / torch 栈，只装在 `C:\dlcv\envs\sam3`。
+
+可选：仓库里的 `autotrain4` 若存在，Intent JSON 解析会复用它的 `safe_parse_json`；没有则走本地正则 JSON 抽取。
+
+---
+
+## 常见问题
+
+**Worker 起不来 / health 一直 down**  
+检查 `python_path` 是否真是 sam3 环境、9892 是否被占、`AutoLabel/runs/sam3/worker.log`。首次 load 可能接近 `startup_timeout`（默认 600s）。
+
+**主进程 import 了 torch**  
+架构错误。推理必须留在 Worker。主进程只允许 `requests` 调 `127.0.0.1:9892`。
+
+**多边形和画面错位**  
+先看该次 run 的 `stage1/debug/<stem>/` 与日志里的 `[IMAGE DEBUG]`（EXIF / PIL / OpenCV / SAM3 尺寸是否一致）。
+
+**不想覆盖已有标注**  
+保持默认 `overwrite_policy=skip_existing`。Commit 前 JSON 只在 `work/`，删 work 不影响原图。
+
+**只想推代码、不要测试集**  
+不要提交 `数据集测试/`、`work/`、`runs/`、`config/settings.json`、`config/backends.json`。SAM3 官方仓是旁边的 `sam3/`，不要当 AutoLabel 源码改。

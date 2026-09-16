@@ -1,7 +1,7 @@
 """Stage A: one-shot SAM3 inference using the sam3 Conda Python.
 
     C:\\dlcv\\envs\\sam3\\python.exe AutoLabel\\sam3_worker\\run_once.py ^
-        --image D:\\data\\001.jpg --prompt phone
+        --image D:\\data\\001.jpg --prompt "<text prompt>"
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ from sam3_worker.inference import get_engine  # noqa: E402
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="One-shot SAM3 text-prompt segmentation")
     parser.add_argument("--image", required=True, help="image path")
-    parser.add_argument("--prompt", required=True, help="short visual prompt, e.g. phone")
+    parser.add_argument("--prompt", required=True, help="text prompt for the segmenter")
     parser.add_argument("--score-threshold", type=float, default=0.55)
     parser.add_argument(
         "--out",

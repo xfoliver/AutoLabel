@@ -51,10 +51,10 @@
     }
   },
   "polygon_xy_range": {
-    "min_x": 358.0,
-    "max_x": 374.0,
-    "min_y": 102.0,
-    "max_y": 155.0
+    "min_x": 140.0,
+    "max_x": 305.0,
+    "min_y": 39.0,
+    "max_y": 465.0
   },
   "n_shapes": 1,
   "labelme_image_wh": [

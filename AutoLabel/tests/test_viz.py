@@ -14,7 +14,16 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT.parent))
 
 from autolabel.models import ShapeRecord  # noqa: E402
-from autolabel.viz import _resolve_font_path, draw_shapes_overlay  # noqa: E402
+from autolabel.viz import _resolve_font_path, color_for_label, draw_shapes_overlay  # noqa: E402
+
+
+def test_color_for_label_is_stable_per_class():
+    a = color_for_label("weld")
+    b = color_for_label("weld", fallback_index=99)
+    c = color_for_label("phone")
+    assert a == b
+    assert a != c
+    assert all(80 <= v <= 239 for v in a)
 
 
 def test_chinese_label_overlay_not_question_marks(tmp_path: Path):

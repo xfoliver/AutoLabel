@@ -3,11 +3,10 @@
   "run_dir": "C:\\Users\\Admin\\kimi_gui_automation\\AutoLabel\\数据集测试\\作弊\\work\\autolabel\\autolabel-20260902_102742",
   "processed": 484,
   "skipped_existing": 0,
-  "empty": 27,
+  "empty": 0,
   "moderation_blocked": 0,
   "buckets": {
-    "sample": 457,
-    "empty": 27
+    "sample": 484
   },
   "pending_total": 484,
   "committed": true,

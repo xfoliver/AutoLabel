@@ -19,10 +19,10 @@ from autolabel.dataset import (
     write_json,
 )
 from autolabel.diagnostics.report import format_summary_text, write_review_queue, write_run_report
-from autolabel.errors import ImageModerationBlocked
+from autolabel.errors import ImageModerationBlocked, IntentError
 from autolabel.exporters.labelmeai import write_labelme_json
 from autolabel.inference.base import InferenceBackend, build_backend_from_config, load_backends_config
-from autolabel.intent import parse_intent_from_text, parse_intent_manual
+from autolabel.intent import apply_display_label, looks_like_simple_prompt, parse_intent_from_text, parse_intent_manual, resolve_intent_mode
 from autolabel.label_spec import intent_to_label_spec
 from autolabel.models import (
     ImageAnnotationResult,
@@ -71,15 +71,36 @@ class AutoLabelOrchestrator:
         self.settings = settings or {}
         self._log = log or (lambda m: logger.info("%s", m))
         self.backends_config = backends_config or load_backends_config()
-        self.backend = backend or build_backend_from_config(self.backends_config, backend_id)
+        self._requested_backend_id = backend_id or self.backends_config.get("annotation_engine")
+        self._backend_injected = backend is not None
+        self.backend = backend or build_backend_from_config(
+            self.backends_config,
+            self._requested_backend_id,
+            settings=self.settings,
+            log=self._log,
+        )
+        self._bind_backend_log()
         self.state = OrchestratorState(backend=self.backend)
 
     def log(self, msg: str) -> None:
         self._log(msg)
 
+    def _bind_backend_log(self) -> None:
+        if self.backend is not None and hasattr(self.backend, "bind_log"):
+            self.backend.bind_log(self._log)
+
+    def _resolve_engine_for_intent(self) -> None:
+        """Keep the selected engine after intent is known. No auto-routing."""
+        self._bind_backend_log()
+        from autolabel.engines import engine_label
+
+        bid = str(getattr(self.backend, "id", "") or "")
+        self.log(f"[Engine] {engine_label(bid)} id={bid}")
+
     # ------------------------------------------------------------------ plan
     def set_intent(self, intent: LabelIntent) -> None:
         self.state.intent = intent
+        self._resolve_engine_for_intent()
 
     def parse_prompt(self, prompt: str, dataset_path: Optional[str] = None) -> LabelIntent:
         intent = parse_intent_from_text(
@@ -90,21 +111,77 @@ class AutoLabelOrchestrator:
         if dataset_path:
             intent.dataset_path = dataset_path
         self.state.intent = intent
+        self._resolve_engine_for_intent()
+        return intent
+
+    def apply_ui_intent(
+        self,
+        *,
+        prompt: str = "",
+        dataset_path: str = "",
+        short_label: str = "",
+        preview_count: int = 5,
+    ) -> LabelIntent:
+        """Parse GUI fields. Must run off the Qt GUI thread (LLM / network)."""
+        prompt = (prompt or "").strip()
+        short_label = (short_label or "").strip()
+        if not prompt and not short_label:
+            raise IntentError("请填写标注目标")
+        visual = short_label or prompt
+        if short_label and (not prompt or prompt == short_label) and looks_like_simple_prompt(visual):
+            intent = self.make_manual_intent(
+                label=short_label,
+                description="",
+                dataset_path=dataset_path or "",
+                exclude=[],
+                preview_count=int(preview_count or 5),
+                model_prompt=short_label,
+            )
+        elif prompt:
+            mode = resolve_intent_mode(self.settings)
+            if mode == "llm":
+                self.log("正在用 LLM 解析自然语言意图，请稍候…")
+            elif mode == "simple":
+                self.log(f"simple 模式：直接使用「{prompt}」作为目标")
+            else:
+                self.log("正在解析意图…")
+            intent = self.parse_prompt(prompt, dataset_path=dataset_path or None)
+            intent.preview_count = int(preview_count or 5)
+            if short_label and intent.targets:
+                apply_display_label(intent, short_label)
+        else:
+            intent = self.make_manual_intent(
+                label=short_label,
+                description="",
+                dataset_path=dataset_path or "",
+                exclude=[],
+                preview_count=int(preview_count or 5),
+                model_prompt=short_label,
+            )
+        t0 = intent.targets[0]
+        visual = (getattr(t0, "model_prompt", "") or t0.label).strip()
+        self.log(f"意图就绪：显示名={t0.label}  /  视觉提示={visual}")
         return intent
 
     def make_manual_intent(self, **kwargs) -> LabelIntent:
         intent = parse_intent_manual(**kwargs)
         self.state.intent = intent
+        self._resolve_engine_for_intent()
         return intent
 
-    def _ensure_sam3_worker(self) -> None:
+    def _needs_sam3_worker(self) -> bool:
         backend = self.backend
-        if backend is None or getattr(backend, "id", "") != "sam3_local":
-            if str(type(backend).__name__) != "Sam3LocalBackend":
-                return
+        if backend is None:
+            return False
+        bid = str(getattr(backend, "id", "") or "")
+        return bid in {"sam3_local", "sam3", "sam3_1_local", "sam3.1"} or type(backend).__name__ == "Sam3LocalBackend"
+
+    def _ensure_sam3_worker(self) -> None:
+        if not self._needs_sam3_worker():
+            return
         from autolabel.sam3_worker_ctl import ensure_worker, worker_options
 
-        opt = dict(getattr(backend, "options", None) or worker_options(self.backends_config))
+        opt = dict(getattr(self.backend, "options", None) or worker_options(self.backends_config))
         ensure_worker(opt, log=self.log, timeout=float(opt.get("startup_timeout") or 600))
 
     def build_plan(self, *, dataset_path: Optional[str] = None) -> PlanPreview:
@@ -130,6 +207,7 @@ class AutoLabelOrchestrator:
         *,
         progress: Optional[ProgressFn] = None,
         seed: Optional[int] = None,
+        stop_flag: Optional[Callable[[], bool]] = None,
     ) -> List[ImageAnnotationResult]:
         plan = self.state.plan or self.build_plan()
         intent = self.state.intent
@@ -149,6 +227,9 @@ class AutoLabelOrchestrator:
         results: List[ImageAnnotationResult] = []
         total = len(sample)
         for i, img in enumerate(sample, start=1):
+            if stop_flag and stop_flag():
+                self.log("收到停止信号，中断试标")
+                break
             if progress:
                 progress(i, total, str(img))
             self.log(f"[preview] {i}/{total} {img.name}")
@@ -276,6 +357,17 @@ class AutoLabelOrchestrator:
         stem = image_path.stem
         meta_path = run_dir / "stage1" / f"{stem}_transform.json"
         write_json(meta_path, s1.transform.to_dict())
+        raw_early = getattr(s1, "raw", None)
+        if isinstance(raw_early, dict) and raw_early.get("candidates") is not None:
+            write_json(
+                run_dir / "stage1" / f"{stem}_candidates.json",
+                {
+                    "target": raw_early.get("target"),
+                    "engine": raw_early.get("engine"),
+                    "candidates": raw_early.get("candidates"),
+                    "quality": raw_early.get("quality"),
+                },
+            )
 
         mask_path = None
         if getattr(s1, "colored_mask", None) is not None:
@@ -289,15 +381,15 @@ class AutoLabelOrchestrator:
                 mask_path = None
         raw = getattr(s1, "raw", None)
         if isinstance(raw, dict):
-            overlay_from_backend = raw.get("overlay_path")
-            if overlay_from_backend and Path(str(overlay_from_backend)).is_file() and mask_path is None:
-                mask_path = Path(str(overlay_from_backend))
             first_mask = None
             for item in raw.get("instances") or []:
-                if isinstance(item, dict) and item.get("mask_path"):
-                    first_mask = Path(str(item["mask_path"]))
+                if not isinstance(item, dict) or not item.get("mask_path"):
+                    continue
+                candidate = Path(str(item["mask_path"]))
+                if candidate.is_file() and candidate.suffix.lower() in {".png", ".bmp", ".tif", ".tiff"}:
+                    first_mask = candidate
                     break
-            if first_mask is not None and first_mask.is_file() and mask_path is None:
+            if first_mask is not None and mask_path is None:
                 mask_path = first_mask
 
         stage2_opts = {}
@@ -308,6 +400,48 @@ class AutoLabelOrchestrator:
             stage2_opts.setdefault("image_bgr", img)
 
         shapes = stage1_to_shapes(s1, **stage2_opts)
+        self.log(f"[Export] annotations={len(shapes)}")
+        try:
+            from autolabel.debug_overlay import (
+                count_sam3_raw,
+                resolve_preview_mask_path,
+                summarize_shapes,
+                write_sam_debug_overlays,
+            )
+
+            counts = count_sam3_raw(s1)
+            shape_info = summarize_shapes(shapes)
+            self.log(
+                f"[SAM3] raw_boxes={counts['raw_boxes']} "
+                f"raw_masks={counts['raw_masks']} "
+                f"final_shapes={shape_info['final_shapes']}"
+            )
+            if counts["raw_masks"] == 0 and shape_info["final_shapes"] > 0:
+                self.log(
+                    "[SAM3] WARNING: raw_masks=0 but final_shapes>0 — "
+                    "bbox fallback is forbidden; inspect debug overlays"
+                )
+            if shape_info["rectangle_n"]:
+                self.log(
+                    f"[Export] rectangle_shapes={shape_info['rectangle_n']}/"
+                    f"{shape_info['final_shapes']} point_counts={shape_info['point_counts']}"
+                )
+            write_sam_debug_overlays(
+                image_path,
+                out_dir=run_dir / "stage1" / "debug" / stem,
+                result=s1,
+                shapes=shapes,
+            )
+            preview_mask = resolve_preview_mask_path(
+                raw=raw if isinstance(raw, dict) else None,
+                debug_dir=run_dir / "stage1" / "debug" / stem,
+                colored_mask_path=mask_path,
+            )
+            if preview_mask is not None:
+                mask_path = preview_mask
+        except Exception as e:
+            self.log(f"SAM3 debug overlays failed for {image_path.name}: {e}")
+
         data = annotate_image_to_dict(image_path, s1, shapes=shapes)
         json_subdir = "preview" if kind == "preview" else "json"
         out_json = run_dir / json_subdir / f"{stem}.json"

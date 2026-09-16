@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from functools import lru_cache
 from pathlib import Path
 from typing import List, Optional, Sequence, Tuple, Union
@@ -20,6 +21,16 @@ _COLORS = [
     (253, 203, 110),
     (225, 112, 85),
 ]
+
+def color_for_label(label: str, fallback_index: int = 0) -> Tuple[int, int, int]:
+    """Stable BGR color for a class. Same label → same color (not rainbow-per-instance)."""
+    key = (label or "").strip()
+    if not key:
+        return _COLORS[int(fallback_index) % len(_COLORS)]
+    digest = hashlib.md5(key.encode("utf-8")).digest()
+    # Keep channels away from 0 so fills stay visible on dark metal.
+    return (80 + digest[0] % 160, 80 + digest[1] % 160, 80 + digest[2] % 160)
+
 
 _FONT_CANDIDATES = (
     Path(r"C:\Windows\Fonts\msyh.ttc"),
@@ -111,7 +122,7 @@ def draw_shapes_overlay(
         raise FileNotFoundError(image_path)
     canvas = img.copy()
     for i, sh in enumerate(shapes):
-        color = _COLORS[i % len(_COLORS)]
+        color = color_for_label(sh.label, i)
         pts = np.array(sh.points, dtype=np.int32).reshape(-1, 1, 2)
         if len(pts) >= 3:
             overlay = canvas.copy()

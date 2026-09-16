@@ -1,11 +1,11 @@
 {
-  "dataset_path": "C:\\Users\\Admin\\kimi_gui_automation\\AutoLabel\\数据集测试\\作弊",
-  "image_count": 484,
-  "pending_count": 484,
+  "dataset_path": "C:\\Users\\Admin\\kimi_gui_automation\\AutoLabel\\数据集测试\\螺丝",
+  "image_count": 155,
+  "pending_count": 155,
   "skipped_existing": 0,
   "annotation_task": "实例分割",
   "object_granularity": "instance",
-  "targets_summary": "手机（图片中的手机，逐台实例分割；包括各种颜色、角度的实体手机。） 排除:平板电脑,仅出现在海报/屏幕里的手机图案",
+  "targets_summary": "螺丝（标注图片中的所有螺丝，每个螺丝作为一个独立实例进行分割）",
   "backend_id": "sam3_local",
   "backend_capabilities": {
     "image_input": true,

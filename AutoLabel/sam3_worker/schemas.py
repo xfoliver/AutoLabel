@@ -5,12 +5,28 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 
-def health_payload(*, model_loaded: bool, device: str = "", error: str = "") -> Dict[str, Any]:
+WORKER_API_VERSION = "0.4"
+WORKER_ENDPOINTS = ["/health", "/segment", "/refine"]
+WORKER_REFINE_MODE = "interactive"
+
+
+def health_payload(
+    *,
+    model_loaded: bool,
+    device: str = "",
+    error: str = "",
+    refine_mode: str = "",
+    sam3_version: str = "",
+) -> Dict[str, Any]:
     status = "ok" if model_loaded else ("loading" if not error else "error")
     payload: Dict[str, Any] = {
         "status": status,
         "model_loaded": bool(model_loaded),
         "device": device,
+        "api_version": WORKER_API_VERSION,
+        "endpoints": list(WORKER_ENDPOINTS),
+        "refine_mode": refine_mode or (WORKER_REFINE_MODE if model_loaded else ""),
+        "sam3_version": sam3_version or "",
     }
     if error:
         payload["error"] = error

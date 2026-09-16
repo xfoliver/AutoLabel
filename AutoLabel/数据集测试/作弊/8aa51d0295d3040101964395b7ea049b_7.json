@@ -1,9 +1,9 @@
 {
-  "version": "2025.9.1.0",
+  "version": "2026.7.17.0",
   "flags": {},
   "shapes": [
     {
-      "label": "手机",
+      "label": "phone",
       "points": [
         [
           305.0,
@@ -47,11 +47,11 @@
         ],
         [
           298.0,
-          339.0
+          338.0
         ],
         [
           297.0,
-          340.0
+          339.0
         ],
         [
           297.0,
@@ -158,11 +158,19 @@
           316.0
         ],
         [
-          311.0,
+          316.0,
+          316.0
+        ],
+        [
+          315.0,
           315.0
         ],
         [
-          310.0,
+          312.0,
+          315.0
+        ],
+        [
+          311.0,
           314.0
         ],
         [
@@ -175,9 +183,98 @@
       "shape_type": "polygon",
       "flags": {
         "autolabel": true,
-        "quality_risk": 0.005,
-        "score_source": "none",
-        "instance_source": "model"
+        "quality_risk": 0.015,
+        "score_source": "model",
+        "instance_source": "model",
+        "model_confidence": 0.94921875
+      },
+      "mask": null
+    },
+    {
+      "label": "phone",
+      "points": [
+        [
+          27.0,
+          234.0
+        ],
+        [
+          26.0,
+          236.0
+        ],
+        [
+          26.0,
+          243.0
+        ],
+        [
+          27.0,
+          244.0
+        ],
+        [
+          27.0,
+          250.0
+        ],
+        [
+          28.0,
+          251.0
+        ],
+        [
+          29.0,
+          255.0
+        ],
+        [
+          31.0,
+          255.0
+        ],
+        [
+          32.0,
+          256.0
+        ],
+        [
+          33.0,
+          255.0
+        ],
+        [
+          39.0,
+          255.0
+        ],
+        [
+          41.0,
+          253.0
+        ],
+        [
+          41.0,
+          247.0
+        ],
+        [
+          39.0,
+          243.0
+        ],
+        [
+          39.0,
+          239.0
+        ],
+        [
+          38.0,
+          238.0
+        ],
+        [
+          38.0,
+          236.0
+        ],
+        [
+          36.0,
+          234.0
+        ]
+      ],
+      "group_id": null,
+      "description": null,
+      "shape_type": "polygon",
+      "flags": {
+        "autolabel": true,
+        "quality_risk": 0.0,
+        "score_source": "model",
+        "instance_source": "model",
+        "model_confidence": 0.3515625
       },
       "mask": null
     }
@@ -185,5 +282,8 @@
   "imagePath": "8aa51d0295d3040101964395b7ea049b_7.jpg",
   "imageData": null,
   "imageHeight": 640,
-  "imageWidth": 480
+  "imageWidth": 480,
+  "img_name_list": [
+    "8aa51d0295d3040101964395b7ea049b_7.jpg"
+  ]
 }

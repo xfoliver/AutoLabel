@@ -2,8 +2,11 @@
   "llm_profiles": [],
   "llm_active_id": "",
   "llm_base_url": "http://192.168.1.3:3000/v1",
-  "llm_api_key": "sk-XHETL1atd6ao007RKk5XynoRyqEmJ36pgEp8Snp0N1uUk0a3",
-  "llm_model": "kimi-k3",
+  "llm_api_key": "sk-uUt6qtB5Jh7j2zIVDrd0Qg26uwwDZPxEmAyWK228jlrILc54",
+  "llm_model": "grok-4.6",
   "llm_protocol": "openai",
-  "intent_mode": "auto"
+  "intent_mode": "llm",
+  "vision_base_url": "https://vectorengine.ai/v1",
+  "vision_model": "gpt-image-2",
+  "vision_api_key": "sk-kbAe93oYOuzIdAgTrpWUzN4KwIcoJ12V243QI9GpPXjpERyv"
 }

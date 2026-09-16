@@ -1,9 +1,9 @@
 {
-  "version": "2025.9.1.0",
+  "version": "2026.7.17.0",
   "flags": {},
   "shapes": [
     {
-      "label": "手机",
+      "label": "phone",
       "points": [
         [
           287.0,
@@ -186,12 +186,20 @@
           280.0
         ],
         [
-          294.0,
+          295.0,
           280.0
         ],
         [
-          293.0,
+          294.0,
           279.0
+        ],
+        [
+          290.0,
+          279.0
+        ],
+        [
+          289.0,
+          278.0
         ]
       ],
       "group_id": null,
@@ -199,9 +207,66 @@
       "shape_type": "polygon",
       "flags": {
         "autolabel": true,
-        "quality_risk": 0.035,
-        "score_source": "none",
-        "instance_source": "model"
+        "quality_risk": 0.045,
+        "score_source": "model",
+        "instance_source": "model",
+        "model_confidence": 0.91796875
+      },
+      "mask": null
+    },
+    {
+      "label": "phone",
+      "points": [
+        [
+          162.0,
+          136.0
+        ],
+        [
+          163.0,
+          140.0
+        ],
+        [
+          169.0,
+          147.0
+        ],
+        [
+          177.0,
+          149.0
+        ],
+        [
+          180.0,
+          146.0
+        ],
+        [
+          180.0,
+          145.0
+        ],
+        [
+          175.0,
+          140.0
+        ],
+        [
+          171.0,
+          138.0
+        ],
+        [
+          169.0,
+          138.0
+        ],
+        [
+          168.0,
+          139.0
+        ]
+      ],
+      "group_id": null,
+      "description": null,
+      "shape_type": "polygon",
+      "flags": {
+        "autolabel": true,
+        "quality_risk": 0.0,
+        "score_source": "model",
+        "instance_source": "model",
+        "model_confidence": 0.2451171875
       },
       "mask": null
     }
@@ -209,5 +274,8 @@
   "imagePath": "8aa51d0295d304010196481f78de0599_17.jpg",
   "imageData": null,
   "imageHeight": 640,
-  "imageWidth": 480
+  "imageWidth": 480,
+  "img_name_list": [
+    "8aa51d0295d304010196481f78de0599_17.jpg"
+  ]
 }

@@ -12,7 +12,12 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT.parent))
 
 from autolabel.errors import IntentError  # noqa: E402
-from autolabel.intent import looks_like_simple_prompt, parse_intent_from_text, parse_intent_manual  # noqa: E402
+from autolabel.intent import (  # noqa: E402
+    apply_display_label,
+    looks_like_simple_prompt,
+    parse_intent_from_text,
+    parse_intent_manual,
+)
 from autolabel.label_spec import build_label_spec  # noqa: E402
 from autolabel.labels import require_nonempty_label, sanitize_class_label, sanitize_target_spec  # noqa: E402
 from autolabel.models import LabelIntent, LabelSpec, TargetSpec  # noqa: E402
@@ -115,6 +120,8 @@ def test_looks_like_simple_prompt():
     assert looks_like_simple_prompt("phone")
     assert looks_like_simple_prompt("red car")
     assert looks_like_simple_prompt("手机")
+    assert looks_like_simple_prompt("a yellow labrador retriever standing on green grass")
+    assert looks_like_simple_prompt("yellow Labrador, smiling, on a lawn")
     assert not looks_like_simple_prompt("标注图片中的手机")
     assert not looks_like_simple_prompt("把这个目录里的汽车全部标出来")
 
@@ -143,3 +150,26 @@ def test_manual_intent_keeps_model_prompt():
     intent = parse_intent_manual(label="手机", model_prompt="phone")
     assert intent.targets[0].label == "手机"
     assert intent.targets[0].model_prompt == "phone"
+
+
+def test_apply_display_label_keeps_llm_visual_prompt():
+    intent = LabelIntent(
+        targets=[TargetSpec(label="焊点", model_prompt="weld bead")],
+    )
+    apply_display_label(intent, "weld")
+    assert intent.targets[0].label == "weld"
+    assert intent.targets[0].model_prompt == "weld bead"
+
+
+def test_apply_display_label_fills_empty_or_instructional_prompt():
+    intent = LabelIntent(targets=[TargetSpec(label="物体", model_prompt="")])
+    apply_display_label(intent, "phone")
+    assert intent.targets[0].label == "phone"
+    assert intent.targets[0].model_prompt == "phone"
+
+    intent2 = LabelIntent(
+        targets=[TargetSpec(label="物体", model_prompt="标注图片中的焊点")],
+    )
+    apply_display_label(intent2, "weld bead")
+    assert intent2.targets[0].label == "weld bead"
+    assert intent2.targets[0].model_prompt == "weld bead"

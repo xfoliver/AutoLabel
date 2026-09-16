@@ -1,7 +1,21 @@
 {
   "permissions": {
     "allow": [
-      "Bash(python *)"
+      "Bash(python *)",
+      "Bash(tasklist)",
+      "Read(//c/Users/Admin/.cache/huggingface/hub/models--facebook--sam3.1/**)",
+      "Read(//c/Users/Admin/.cache/huggingface/hub/models--facebook--sam3/**)",
+      "Bash(cmd.exe *)",
+      "Bash(curl -sS -m 3 http://127.0.0.1:9892/health)",
+      "Bash(echo \"HEALTH_FAIL:$?\")",
+      "Bash(powershell.exe *)",
+      "Bash(nvidia-smi --query-gpu=name,memory.used,memory.total,utilization.gpu,utilization.memory --format=csv)",
+      "Bash(nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv)",
+      "Bash(nvidia-smi *)",
+      "Bash(curl -sS -m 15 -o /dev/null -w \"proxy_https_code=%{http_code} time=%{time_total}\\\\n\" -x http://127.0.0.1:7890 https://vectorengine.ai/v1/models)",
+      "Bash(echo \"CURL_FAIL:$?\")",
+      "Bash(curl -sS -m 10 -o /dev/null -w \"direct_https_code=%{http_code} time=%{time_total}\\\\n\" https://vectorengine.ai/v1/models)",
+      "Bash(echo \"DIRECT_FAIL:$?\")"
     ]
   }
 }

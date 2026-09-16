@@ -1,9 +1,9 @@
 {
-  "version": "2025.9.1.0",
+  "version": "2026.7.17.0",
   "flags": {},
   "shapes": [
     {
-      "label": "手机",
+      "label": "phone",
       "points": [
         [
           304.0,
@@ -66,23 +66,7 @@
           362.0
         ],
         [
-          296.0,
-          363.0
-        ],
-        [
-          298.0,
-          363.0
-        ],
-        [
-          299.0,
-          364.0
-        ],
-        [
           301.0,
-          364.0
-        ],
-        [
-          302.0,
           365.0
         ],
         [
@@ -90,20 +74,16 @@
           365.0
         ],
         [
-          308.0,
-          367.0
+          305.0,
+          366.0
+        ],
+        [
+          307.0,
+          366.0
         ],
         [
           311.0,
-          367.0
-        ],
-        [
-          312.0,
           368.0
-        ],
-        [
-          312.0,
-          367.0
         ],
         [
           314.0,
@@ -203,9 +183,162 @@
       "shape_type": "polygon",
       "flags": {
         "autolabel": true,
-        "quality_risk": 0.04,
-        "score_source": "none",
-        "instance_source": "model"
+        "quality_risk": 0.015,
+        "score_source": "model",
+        "instance_source": "model",
+        "model_confidence": 0.9453125
+      },
+      "mask": null
+    },
+    {
+      "label": "phone",
+      "points": [
+        [
+          27.0,
+          234.0
+        ],
+        [
+          26.0,
+          236.0
+        ],
+        [
+          26.0,
+          245.0
+        ],
+        [
+          27.0,
+          246.0
+        ],
+        [
+          27.0,
+          250.0
+        ],
+        [
+          28.0,
+          251.0
+        ],
+        [
+          28.0,
+          253.0
+        ],
+        [
+          30.0,
+          255.0
+        ],
+        [
+          36.0,
+          255.0
+        ],
+        [
+          37.0,
+          254.0
+        ],
+        [
+          40.0,
+          254.0
+        ],
+        [
+          41.0,
+          252.0
+        ],
+        [
+          41.0,
+          247.0
+        ],
+        [
+          39.0,
+          243.0
+        ],
+        [
+          39.0,
+          239.0
+        ],
+        [
+          38.0,
+          238.0
+        ],
+        [
+          38.0,
+          236.0
+        ],
+        [
+          36.0,
+          234.0
+        ]
+      ],
+      "group_id": null,
+      "description": null,
+      "shape_type": "polygon",
+      "flags": {
+        "autolabel": true,
+        "quality_risk": 0.0,
+        "score_source": "model",
+        "instance_source": "model",
+        "model_confidence": 0.314453125
+      },
+      "mask": null
+    },
+    {
+      "label": "phone",
+      "points": [
+        [
+          411.0,
+          123.0
+        ],
+        [
+          407.0,
+          123.0
+        ],
+        [
+          405.0,
+          126.0
+        ],
+        [
+          404.0,
+          132.0
+        ],
+        [
+          402.0,
+          136.0
+        ],
+        [
+          402.0,
+          142.0
+        ],
+        [
+          404.0,
+          144.0
+        ],
+        [
+          406.0,
+          144.0
+        ],
+        [
+          408.0,
+          141.0
+        ],
+        [
+          409.0,
+          135.0
+        ],
+        [
+          412.0,
+          129.0
+        ],
+        [
+          412.0,
+          124.0
+        ]
+      ],
+      "group_id": null,
+      "description": null,
+      "shape_type": "polygon",
+      "flags": {
+        "autolabel": true,
+        "quality_risk": 0.0,
+        "score_source": "model",
+        "instance_source": "model",
+        "model_confidence": 0.2099609375
       },
       "mask": null
     }
@@ -213,5 +346,8 @@
   "imagePath": "8aa51d0295d3040101964395b7ea049b_12.jpg",
   "imageData": null,
   "imageHeight": 640,
-  "imageWidth": 480
+  "imageWidth": 480,
+  "img_name_list": [
+    "8aa51d0295d3040101964395b7ea049b_12.jpg"
+  ]
 }

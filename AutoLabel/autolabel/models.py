@@ -342,6 +342,7 @@ class InstancePred:
     class_name: str
     mask: np.ndarray  # bool/uint8 HxW
     score: Optional[float] = None
+    quality_status: Optional[str] = None
 
     def to_meta_dict(self) -> Dict[str, Any]:
         return {
@@ -371,7 +372,8 @@ class ShapeRecord:
     model_confidence: Optional[float] = None
     quality_risk: float = 0.0
     score_source: str = "none"  # model | none
-    instance_source: str = "model"  # model | connected_components
+    instance_source: str = "model"  # model | connected_components | vision | vision_sam3
+    quality_status: Optional[str] = None  # accepted | needs_review
     group_id: Any = None
     description: Any = None
 

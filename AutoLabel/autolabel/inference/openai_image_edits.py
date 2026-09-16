@@ -110,7 +110,9 @@ def request_proxies(base_url: str, http_proxy: str = "") -> Optional[Dict[str, O
             pass
     proxy = str(http_proxy or "").strip()
     if not proxy:
-        return None
+        # Explicit empty: do not inherit HTTPS_PROXY. Clash on 7890
+        # hangs gpt-image /images/edits (connect works, body never returns).
+        return {"http": None, "https": None}
     return {"http": proxy, "https": proxy}
 
 
@@ -170,14 +172,18 @@ class OpenAIImageEditsBackend(InferenceBackend):
         self.upload_format = str(self.options.get("upload_format") or "jpeg").strip().lower()
         self.jpeg_quality = int(self.options.get("jpeg_quality") or 85)
         self.downscale_upload = bool(self.options.get("downscale_upload", True))
-        self.http_proxy = str(
-            self.options.get("http_proxy")
-            or os.environ.get("HTTPS_PROXY")
-            or os.environ.get("https_proxy")
-            or os.environ.get("HTTP_PROXY")
-            or os.environ.get("http_proxy")
-            or ""
-        ).strip()
+        if "http_proxy" in self.options:
+            # Empty string means "direct"; do not fall back to env.
+            self.http_proxy = str(self.options.get("http_proxy") or "").strip()
+        else:
+            self.http_proxy = str(
+                os.environ.get("HTTPS_PROXY")
+                or os.environ.get("https_proxy")
+                or os.environ.get("HTTP_PROXY")
+                or os.environ.get("http_proxy")
+                or ""
+            ).strip()
+        self._log = logger.info
         self.min_area = int(self.options.get("min_area") or 64)
         self.quantize = int(self.options.get("quantize") or 8)
         self.bg_luma_thresh = float(self.options.get("bg_luma_thresh") or 24)
@@ -205,6 +211,10 @@ class OpenAIImageEditsBackend(InferenceBackend):
             confidence=bool(caps.get("confidence", False)),
             reference_images=bool(caps.get("reference_images", False)),
         )
+
+    def bind_log(self, log) -> None:
+        if callable(log):
+            self._log = log
 
     @property
     def capabilities(self) -> BackendCapabilities:
@@ -267,6 +277,12 @@ class OpenAIImageEditsBackend(InferenceBackend):
             data["quality"] = self.quality
 
         proxies = request_proxies(self.base_url, self.http_proxy)
+        via = (proxies or {}).get("https") if proxies else None
+        via_txt = via or "direct"
+        self._log(
+            f"[{self.id}] {path.name} → {self.model} {self.size} "
+            f"via {via_txt}（云端出图，约 30～90 秒，进度条这段不会动）"
+        )
         t0 = time.perf_counter()
         try:
             # Connect budget is short; generation wait stays ``timeout`` (default 180s).

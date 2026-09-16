@@ -13,6 +13,38 @@ from autolabel.cv_io import imread, imwrite
 from autolabel.image_orient import exif_orientation, open_normalized
 from autolabel.models import ShapeRecord
 
+_MASK_COLORS = [
+    (0, 0, 255),
+    (0, 220, 80),
+    (255, 120, 50),
+    (0, 200, 255),
+    (200, 0, 220),
+    (40, 80, 255),
+    (0, 180, 180),
+    (180, 80, 0),
+]
+
+
+def _binary_mask_paths(sam3_raw: Optional[Dict[str, Any]], mask_path: Optional[Path]) -> List[Path]:
+    """Collect per-instance PNG masks. Never treat a color JPG overlay as a mask."""
+    paths: List[Path] = []
+    seen = set()
+    for item in (sam3_raw or {}).get("instances") or []:
+        if not isinstance(item, dict) or not item.get("mask_path"):
+            continue
+        p = Path(str(item["mask_path"]))
+        key = str(p)
+        if key in seen:
+            continue
+        if p.is_file() and p.suffix.lower() in {".png", ".bmp", ".tif", ".tiff"}:
+            paths.append(p)
+            seen.add(key)
+    if not paths and mask_path and Path(mask_path).is_file():
+        p = Path(mask_path)
+        if p.suffix.lower() in {".png", ".bmp", ".tif", ".tiff"}:
+            paths.append(p)
+    return paths
+
 
 def write_coord_debug(
     image_path: Path,
@@ -42,20 +74,35 @@ def write_coord_debug(
     opencv_wh = [int(bgr.shape[1]), int(bgr.shape[0])] if bgr is not None else None
 
     mask_shape = None
-    if mask_path and Path(mask_path).is_file():
-        mask = imread(mask_path, cv2.IMREAD_UNCHANGED)
-        if mask is not None:
-            if mask.ndim == 3:
-                mask = mask[:, :, 0]
-            mask_shape = [int(mask.shape[0]), int(mask.shape[1])]
-            imwrite(out_dir / "03_sam3_raw_mask.png", mask)
-            if bgr is not None and mask.shape[:2] == bgr.shape[:2]:
+    mask_files = _binary_mask_paths(sam3_raw, Path(mask_path) if mask_path else None)
+    union = None
+    vis = None
+    color_i = 0
+    for mp in mask_files:
+        mask = imread(mp, cv2.IMREAD_UNCHANGED)
+        if mask is None:
+            continue
+        if mask.ndim == 3:
+            mask = mask[:, :, 0]
+        binary = (mask > 0).astype(np.uint8)
+        if union is None:
+            union = binary.copy()
+            mask_shape = [int(binary.shape[0]), int(binary.shape[1])]
+        elif binary.shape == union.shape:
+            union = np.maximum(union, binary)
+        else:
+            continue
+        if bgr is not None and binary.shape[:2] == bgr.shape[:2]:
+            if vis is None:
                 vis = bgr.copy()
-                color = np.zeros_like(vis)
-                color[:, :] = (0, 0, 255)
-                m = mask > 0
-                vis[m] = (vis[m] * 0.45 + color[m] * 0.55).astype(np.uint8)
-                imwrite(out_dir / "04_sam3_mask_overlay.jpg", vis)
+            color = np.array(_MASK_COLORS[color_i % len(_MASK_COLORS)], dtype=np.float32)
+            m = binary > 0
+            vis[m] = (vis[m].astype(np.float32) * 0.45 + color * 0.55).astype(np.uint8)
+            color_i += 1
+    if union is not None:
+        imwrite(out_dir / "03_sam3_raw_mask.png", (union > 0).astype(np.uint8) * 255)
+        if vis is not None:
+            imwrite(out_dir / "04_sam3_mask_overlay.jpg", vis)
 
     if overlay_path and Path(overlay_path).is_file():
         ov = imread(overlay_path, cv2.IMREAD_COLOR)

@@ -10,7 +10,6 @@ from PyQt5.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QGridLayout,
-    QHBoxLayout,
     QLabel,
     QScrollArea,
     QSizePolicy,
@@ -19,6 +18,7 @@ from PyQt5.QtWidgets import (
 )
 
 from ui.styles import apply_window_styles
+from ui.widgets.flow_layout import FlowLayout
 from ui.widgets.ui_scale import UIScale
 
 
@@ -200,7 +200,9 @@ class PreviewGalleryDialog(QDialog):
         layout.setContentsMargins(12, 12, 12, 12)
         layout.addWidget(title)
         hint = QLabel(
-            "左图是 polygon overlay，右图（若有）是模型 raw mask / SAM3 overlay。"
+            "左图是最终 polygon overlay（LabelMe 导出，带轮廓和类别色）。"
+            "右图是同一批实例的像素 mask（青色，无多边形），用来看贴边和锯齿。"
+            "两边内容应对齐；若右图多出划痕，说明过滤没生效。"
             "点击缩略图可放大。不满意请修改描述/换 backend，不要直接全量。"
         )
         hint.setObjectName("Hint")
@@ -223,9 +225,8 @@ class PreviewGalleryDialog(QDialog):
             img_label = self._thumb(str(path), tw, th, skipped=bool(getattr(r, "skipped", False)))
             mask_path = getattr(r, "preview_mask_path", None)
             thumbs = QWidget()
-            thumbs_row = QHBoxLayout(thumbs)
-            thumbs_row.setContentsMargins(0, 0, 0, 0)
-            thumbs_row.setSpacing(6)
+            thumbs.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
+            thumbs_row = FlowLayout(thumbs, spacing=6)
             thumbs_row.addWidget(img_label)
             if mask_path:
                 mask_label = self._thumb(str(mask_path), tw, th, skipped=False)
@@ -237,7 +238,7 @@ class PreviewGalleryDialog(QDialog):
                 note = "\n审核拦截（已跳过，不进 Commit）"
             elif r.review and r.review.notes:
                 note = f"\n{r.review.notes[:80]}"
-            mask_hint = "  · 右图=raw mask" if mask_path else ""
+            mask_hint = "  · 右图=青色像素 mask" if mask_path else "  · 无 raw overlay"
             meta = QLabel(
                 f"{Path(r.image_path).name}\n"
                 f"shapes={len(r.shapes)}  bucket={bucket}"
@@ -246,8 +247,10 @@ class PreviewGalleryDialog(QDialog):
             )
             meta.setObjectName("Hint")
             meta.setWordWrap(True)
+            meta.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
             card = QWidget()
-            card.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Maximum)
+            card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
+            card.setMinimumWidth(0)
             col = QVBoxLayout(card)
             col.setContentsMargins(4, 4, 4, 4)
             col.addWidget(thumbs)
@@ -275,7 +278,7 @@ class PreviewGalleryDialog(QDialog):
 
     def _column_count(self) -> int:
         avail = self._scroll.viewport().width() if hasattr(self, "_scroll") else self.width()
-        cell = self._thumb_w + 24
+        cell = self._thumb_w + 28
         return max(1, avail // max(1, cell))
 
     def _relayout_cards(self) -> None:

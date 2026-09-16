@@ -4,19 +4,16 @@
   "object_granularity": "instance",
   "targets": [
     {
-      "label": "手机",
-      "description": "图片中的手机，逐台实例分割；包括各种颜色、角度的实体手机。",
+      "label": "螺丝",
+      "description": "标注图片中的所有螺丝，每个螺丝作为一个独立实例进行分割",
       "include": [],
-      "exclude": [
-        "平板电脑",
-        "仅出现在海报/屏幕里的手机图案"
-      ],
-      "model_prompt": "phone"
+      "exclude": [],
+      "model_prompt": "螺丝"
     }
   ],
-  "dataset_path": "C:/Users/Admin/kimi_gui_automation/AutoLabel/数据集测试/作弊",
+  "dataset_path": "C:/Users/Admin/kimi_gui_automation/AutoLabel/数据集测试/螺丝",
   "dataset_clues": {
-    "drive": "Z:",
+    "drive": null,
     "path_fragments": [],
     "dataset_name": null
   },

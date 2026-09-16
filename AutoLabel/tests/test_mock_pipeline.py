@@ -48,6 +48,25 @@ def test_adjacent_instances_produce_two_shapes(sample_dir: Path):
     assert len(shapes) >= 2, f"expected >=2 polygons, got {len(shapes)}"
 
 
+def test_apply_ui_intent_simple_mode_keeps_short_label(sample_dir: Path):
+    backend = MockBackend("mock", {"n_instances": 1})
+    orch = AutoLabelOrchestrator(
+        backend=backend,
+        settings={"intent_mode": "simple"},
+        log=lambda m: None,
+    )
+    intent = orch.apply_ui_intent(
+        prompt="phone",
+        dataset_path=str(sample_dir),
+        short_label="手机",
+        preview_count=3,
+    )
+    assert intent.targets[0].label == "手机"
+    assert intent.targets[0].model_prompt == "phone"
+    assert intent.preview_count == 3
+    assert intent.dataset_path == str(sample_dir)
+
+
 def test_orchestrator_preview_batch_commit_skip(sample_dir: Path):
     backend = MockBackend("mock", {"n_instances": 2, "adjacent": True, "mask_scale": 1.0, "mode": "identity"})
     orch = AutoLabelOrchestrator(backend=backend, log=lambda m: None)

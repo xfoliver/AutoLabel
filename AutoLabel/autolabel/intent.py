@@ -20,7 +20,7 @@ INTENT_SYSTEM = """你是工业视觉自动标注意图解析器。用户用自�
   "action": "auto_label",
   "annotation_task": "实例分割",
   "object_granularity": "instance",
-  "targets": [{"label": "短类别名（显示用）", "model_prompt": "short English visual concept for SAM3", "description": "语义描述", "include": [], "exclude": ["不要的东西"]}],
+  "targets": [{"label": "短类别名（显示用）", "model_prompt": "visual wording for the text-guided segmenter", "description": "语义描述", "include": [], "exclude": ["不要的东西"]}],
   "dataset_path": "若用户给了明确路径则填，否则 null",
   "dataset_clues": {"drive": "Z:", "path_fragments": ["片段"], "dataset_name": null},
   "references": {"positive": [], "negative": []},
@@ -30,8 +30,8 @@ INTENT_SYSTEM = """你是工业视觉自动标注意图解析器。用户用自�
   "review_policy": "low_confidence_only"
 }
 关键规则（强制）：
-- targets[].label 必须是 1～8 个字的短名词，例如「手机」「汽车」「人」。用于 LabelMe 显示。
-- targets[].model_prompt 必须是简短视觉概念（优先英文），例如 phone / car / person / red car。
+- targets[].label 必须是短名词，用于 LabelMe 显示。不要用整句任务指令当 label。
+- targets[].model_prompt 按用户说法提炼视觉描述，优先英文。不要换成任何固定词表，也不要发明用户没说的类别。
 - 禁止把整句指令放进 label 或 model_prompt（错误例：「只识别图片中的目标」「把该目录中的物体」）。
 - 详细规则、排除项一律放进 description / exclude。
 - 不要把业务描述整段发给视觉模型。
@@ -39,7 +39,10 @@ MVP 只支持实例分割；若用户说检测/分类等，仍输出 annotation_
 """
 
 
-_SIMPLE_PROMPT_RE = re.compile(r"^[\w\-./一-鿿 ]{1,32}$", re.UNICODE)
+_GUI_INSTRUCTION = re.compile(
+    r"(标注|标出|把该|目录|图片中|please\s+annotate|detect all|label all)",
+    re.IGNORECASE,
+)
 
 
 def _safe_parse_json(text: str) -> Optional[Dict[str, Any]]:
@@ -79,22 +82,31 @@ def _validate_intent_targets(intent: LabelIntent) -> LabelIntent:
     return intent
 
 
+def apply_display_label(intent: LabelIntent, short: str) -> LabelIntent:
+    """Use the GUI short-name field as LabelMe class. Keep a good model_prompt.
+
+    The short field is the display class (and a fallback SAM3 prompt). It must
+    not overwrite an existing visual prompt from the LLM / AI name-suggest.
+    If the current model_prompt looks like a full instruction, replace it.
+    """
+    short = (short or "").strip()
+    if not short or not intent.targets:
+        return intent
+    t0 = intent.targets[0]
+    if looks_like_simple_prompt(short):
+        t0.label = require_nonempty_label(short)
+        existing = str(getattr(t0, "model_prompt", "") or "").strip()
+        if not existing or not looks_like_simple_prompt(existing):
+            t0.model_prompt = short
+    return intent
+
+
 def looks_like_simple_prompt(text: str) -> bool:
-    """True when the user typed a short class noun, not a sentence."""
+    """True when the field is a visual target, not a GUI task instruction."""
     s = (text or "").strip()
     if not s or "\n" in s:
         return False
-    if len(s) > 32:
-        return False
-    instructional = ("标注", "标出", "识别", "把该", "所有", "目录", "图片中", "please")
-    lower = s.lower()
-    if any(tok in s for tok in instructional):
-        return False
-    if any(tok in lower for tok in ("please", "annotate", "detect all", "label all")):
-        return False
-    if " " in s and len(s.split()) > 4:
-        return False
-    return bool(_SIMPLE_PROMPT_RE.match(s))
+    return _GUI_INSTRUCTION.search(s) is None
 
 
 def parse_intent_manual(
@@ -190,12 +202,17 @@ def parse_intent_from_text(
         if mode == "llm":
             raise IntentError(
                 "LLM 不可用，无法解析自然语言意图。"
-                "请配置 LLM，或改用 simple 模式直接填写短类别名（如 phone）"
+                "请配置 LLM，或改用 simple 模式直接填写短类别名"
             )
         logger.info("LLM unavailable; using simple intent for %r", prompt[:40])
         return parse_intent_simple(prompt, dataset_path=dataset_path)
 
     try:
+        logger.info(
+            "LLM intent parse start mode=%s model=%s",
+            mode,
+            getattr(client, "model", "") or "?",
+        )
         resp = client.chat(
             [
                 {"role": "system", "content": INTENT_SYSTEM},
@@ -203,6 +220,7 @@ def parse_intent_from_text(
             ]
         )
         content = resp if isinstance(resp, str) else getattr(resp, "content", None) or str(resp)
+        logger.info("LLM intent parse done (%s chars)", len(content or ""))
     except Exception as e:
         if mode != "llm":
             logger.warning("LLM call failed, falling back to simple: %s", e)
@@ -215,7 +233,7 @@ def parse_intent_from_text(
             return parse_intent_simple(prompt, dataset_path=dataset_path)
         raise IntentError(
             "LLM 未返回可解析的意图 JSON。"
-            "请重试，或改用 simple 模式填写短类别名（如 phone）"
+            "请重试，或改用 simple 模式填写短类别名"
         )
 
     intent = LabelIntent.from_dict(data)

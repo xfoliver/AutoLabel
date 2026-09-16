@@ -3,7 +3,7 @@
   "flags": {},
   "shapes": [
     {
-      "label": "手机",
+      "label": "phone",
       "points": [
         [
           507.0,
@@ -158,8 +158,8 @@
           298.0
         ],
         [
-          505.0,
-          295.0
+          506.0,
+          292.0
         ],
         [
           506.0,
@@ -188,8 +188,9 @@
       "flags": {
         "autolabel": true,
         "quality_risk": 0.02,
-        "score_source": "none",
-        "instance_source": "model"
+        "score_source": "model",
+        "instance_source": "model",
+        "model_confidence": 0.953125
       },
       "mask": null
     }

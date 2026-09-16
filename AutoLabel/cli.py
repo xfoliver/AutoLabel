@@ -16,6 +16,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from autolabel.capability import CapabilityError
+from autolabel.paths import backends_path, ensure_user_config, settings_path
 from autolabel.inference.base import build_backend_from_config, load_backends_config
 from autolabel.orchestrator import AutoLabelOrchestrator
 from autolabel.plan import format_plan_text
@@ -25,14 +26,14 @@ def _load_settings(path: Path | None) -> dict:
     if path and path.exists():
         with path.open("r", encoding="utf-8") as f:
             return json.load(f)
-    # try shared pyqt settings
-    shared = PROJECT_ROOT / "pyqt_frontend" / "settings.json"
-    if shared.exists():
-        with shared.open("r", encoding="utf-8") as f:
-            return json.load(f)
-    local = ROOT / "config" / "settings.json"
+    ensure_user_config()
+    local = settings_path()
     if local.exists():
         with local.open("r", encoding="utf-8") as f:
+            return json.load(f)
+    example = ROOT / "config" / "settings.example.json"
+    if example.exists():
+        with example.open("r", encoding="utf-8") as f:
             return json.load(f)
     return {}
 
@@ -44,7 +45,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--description", default="", help="目标语义描述")
     parser.add_argument("--exclude", default="", help="排除项，逗号分隔")
     parser.add_argument("--prompt", default="", help="自然语言（可选，覆盖手工字段）")
-    parser.add_argument("--backend", default=None, help="backend id（默认读 config）")
+    parser.add_argument("--backend", default=None, help="引擎：sam3.1，或设置里添加的 API 引擎 id / chat-image / mock")
     parser.add_argument("--backends-config", default=None, help="backends.json 路径")
     parser.add_argument("--settings", default=None, help="LLM settings.json")
     parser.add_argument("--preview", action="store_true", help="试标 3~5 张")
@@ -54,16 +55,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--preview-count", type=int, default=5)
     parser.add_argument("--plan-only", action="store_true")
     parser.add_argument("--intent-mode", default=None, help="auto | llm | simple")
-    parser.add_argument("--score-threshold", type=float, default=None, help="SAM3 score threshold")
+    parser.add_argument("--score-threshold", type=float, default=None, help="SAM3.1 score threshold")
     parser.add_argument("--min-area", type=int, default=None, help="drop tiny instances (px)")
     args = parser.parse_args(argv)
 
-    backends_path = Path(args.backends_config) if args.backends_config else None
-    bcfg = load_backends_config(backends_path)
-    backend = build_backend_from_config(bcfg, args.backend)
+    backends_path_arg = Path(args.backends_config) if args.backends_config else backends_path()
+    bcfg = load_backends_config(backends_path_arg if backends_path_arg.exists() else None)
     settings = _load_settings(Path(args.settings) if args.settings else None)
     if args.intent_mode:
         settings["intent_mode"] = args.intent_mode
+    backend = build_backend_from_config(bcfg, args.backend, settings=settings)
     if args.score_threshold is not None and hasattr(backend, "score_threshold"):
         backend.score_threshold = float(args.score_threshold)
         if getattr(backend, "options", None) is not None:
@@ -76,6 +77,7 @@ def main(argv: list[str] | None = None) -> int:
     orch = AutoLabelOrchestrator(
         backends_config=bcfg,
         backend=backend,
+        backend_id=args.backend,
         settings=settings,
         log=lambda m: print(m, flush=True),
     )

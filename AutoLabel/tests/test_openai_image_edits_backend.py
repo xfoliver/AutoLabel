@@ -306,8 +306,8 @@ def test_predict_sends_quality_and_jpeg_upload(tmp_path: Path):
     assert filename.endswith(".jpg")
     assert result.raw.get("quality") == "low"
     assert result.raw.get("upload_bytes", 0) > 0
-    # public host without http_proxy → let requests use env/default
-    assert kwargs.get("proxies") is None
+    # empty / missing proxy on public host → explicit bypass (do not inherit env)
+    assert kwargs.get("proxies") == {"http": None, "https": None}
 
 
 def test_orchestrator_writes_raw_mask_png(tmp_path: Path):
@@ -373,7 +373,10 @@ def test_request_proxies_bypass_lan_and_use_clash():
         "http": None,
         "https": None,
     }
-    assert request_proxies("https://vectorengine.ai/v1", "") is None
+    assert request_proxies("https://vectorengine.ai/v1", "") == {
+        "http": None,
+        "https": None,
+    }
 
 
 def test_predict_passes_http_proxy(tmp_path: Path):

@@ -50,8 +50,13 @@
       "mode": "identity"
     }
   },
-  "polygon_xy_range": null,
-  "n_shapes": 0,
+  "polygon_xy_range": {
+    "min_x": 80.0,
+    "max_x": 256.0,
+    "min_y": 318.0,
+    "max_y": 551.0
+  },
+  "n_shapes": 1,
   "labelme_image_wh": [
     480,
     640

@@ -17,8 +17,7 @@ def require_nonempty_label(label: str) -> str:
     s = (label or "").strip()
     if not s:
         raise IntentError(
-            "targets[].label 不能为空；请让 LLM 输出短类别名（如「零件」），"
-            "或在手工模式下填写短类别名"
+            "targets[].label 不能为空；请填写短类别名，或让 LLM 输出短类别名"
         )
     return s
 

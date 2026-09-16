@@ -75,6 +75,9 @@ def stage1_to_shapes(
         score_source = "model" if score is not None else "none"
         for poly in polys:
             risk = compute_quality_risk(poly, image_width=ow, image_height=oh)
+            qstatus = getattr(inst, "quality_status", None)
+            if qstatus == "needs_review":
+                risk = max(risk, 0.55)
             shapes.append(
                 ShapeRecord(
                     label=inst.class_name,
@@ -84,6 +87,7 @@ def stage1_to_shapes(
                     quality_risk=risk,
                     score_source=score_source,
                     instance_source=instance_source,
+                    quality_status=qstatus,
                 )
             )
     return shapes

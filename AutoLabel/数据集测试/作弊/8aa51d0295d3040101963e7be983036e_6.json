@@ -1,9 +1,9 @@
 {
-  "version": "2025.9.1.0",
+  "version": "2026.7.17.0",
   "flags": {},
   "shapes": [
     {
-      "label": "手机",
+      "label": "phone",
       "points": [
         [
           91.0,
@@ -102,12 +102,20 @@
           334.0
         ],
         [
-          103.0,
-          325.0
+          105.0,
+          330.0
         ],
         [
-          103.0,
+          105.0,
+          328.0
+        ],
+        [
+          102.0,
           323.0
+        ],
+        [
+          102.0,
+          321.0
         ],
         [
           99.0,
@@ -132,8 +140,81 @@
       "flags": {
         "autolabel": true,
         "quality_risk": 0.0,
-        "score_source": "none",
-        "instance_source": "model"
+        "score_source": "model",
+        "instance_source": "model",
+        "model_confidence": 0.9453125
+      },
+      "mask": null
+    },
+    {
+      "label": "phone",
+      "points": [
+        [
+          167.0,
+          253.0
+        ],
+        [
+          168.0,
+          254.0
+        ],
+        [
+          175.0,
+          254.0
+        ],
+        [
+          176.0,
+          255.0
+        ],
+        [
+          188.0,
+          256.0
+        ],
+        [
+          192.0,
+          249.0
+        ],
+        [
+          192.0,
+          247.0
+        ],
+        [
+          191.0,
+          246.0
+        ],
+        [
+          189.0,
+          246.0
+        ],
+        [
+          188.0,
+          247.0
+        ],
+        [
+          175.0,
+          247.0
+        ],
+        [
+          174.0,
+          246.0
+        ],
+        [
+          169.0,
+          246.0
+        ],
+        [
+          167.0,
+          248.0
+        ]
+      ],
+      "group_id": null,
+      "description": null,
+      "shape_type": "polygon",
+      "flags": {
+        "autolabel": true,
+        "quality_risk": 0.0,
+        "score_source": "model",
+        "instance_source": "model",
+        "model_confidence": 0.224609375
       },
       "mask": null
     }
@@ -141,5 +222,8 @@
   "imagePath": "8aa51d0295d3040101963e7be983036e_6.jpg",
   "imageData": null,
   "imageHeight": 480,
-  "imageWidth": 640
+  "imageWidth": 640,
+  "img_name_list": [
+    "8aa51d0295d3040101963e7be983036e_6.jpg"
+  ]
 }

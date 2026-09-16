@@ -48,11 +48,13 @@ def _begin_load() -> None:
 
     def _run() -> None:
         engine = get_engine()
-        sys.stderr.write("[sam3_worker] loading SAM3 model (once)…\n")
+        sys.stderr.write("[sam3_worker] loading SAM3.1 model (once)…\n")
         sys.stderr.flush()
         try:
             engine.load()
-            sys.stderr.write(f"[sam3_worker] model loaded on {engine.device}\n")
+            sys.stderr.write(
+                f"[sam3_worker] model loaded on {engine.device} version={getattr(engine, 'sam3_version', '') or 'sam3.1'}\n"
+            )
             sys.stderr.flush()
         except Exception as e:
             traceback.print_exc()
@@ -88,6 +90,8 @@ class Sam3Handler(BaseHTTPRequestHandler):
                     model_loaded=engine.loaded,
                     device=engine.device,
                     error=engine.error,
+                    refine_mode=getattr(engine, "refine_mode", "") or "",
+                    sam3_version=getattr(engine, "sam3_version", "") or "",
                 ),
             )
             return
@@ -105,7 +109,7 @@ class Sam3Handler(BaseHTTPRequestHandler):
         if not isinstance(data, dict):
             self._send(400, {"status": "error", "error": "JSON object required"})
             return
-        if path != "/segment":
+        if path not in ("/segment", "/refine"):
             self._send(404, {"status": "error", "error": f"unknown path {path}"})
             return
         engine = get_engine()
@@ -116,7 +120,7 @@ class Sam3Handler(BaseHTTPRequestHandler):
             self._send(503, {"status": "loading", "error": "SAM3 model is still loading"})
             return
         try:
-            result = self._segment(data)
+            result = self._refine(data) if path == "/refine" else self._segment(data)
         except FileNotFoundError as e:
             self._send(404, {"status": "error", "error": str(e)})
             return
@@ -128,6 +132,48 @@ class Sam3Handler(BaseHTTPRequestHandler):
             self._send(500, {"status": "error", "error": str(e)})
             return
         self._send(200, result)
+
+    def _json_result(self, packed: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "status": "ok",
+            "prompt": packed.get("prompt"),
+            "mode": packed.get("mode"),
+            "image_path": packed.get("image_path"),
+            "image_size": packed.get("image_size"),
+            "instances": packed.get("instances"),
+            "overlay_path": packed.get("overlay_path"),
+            "result_json": packed.get("result_json"),
+            "exif_orientation": packed.get("exif_orientation"),
+            "pil_raw_size_wh": packed.get("pil_raw_size_wh"),
+            "normalized_size_wh": packed.get("normalized_size_wh"),
+            "applied_exif_transpose": packed.get("applied_exif_transpose"),
+        }
+
+    def _refine(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        image_path = str(data.get("image_path") or "").strip()
+        if not image_path:
+            raise ValueError("image_path is required")
+        bbox = data.get("bbox") or data.get("box")
+        points = data.get("points") or []
+        if bbox is not None and not isinstance(bbox, (list, tuple)):
+            raise ValueError("bbox must be [x1,y1,x2,y2]")
+        if points and not isinstance(points, list):
+            raise ValueError("points must be [[x,y], ...]")
+        score = float(data.get("score_threshold") if data.get("score_threshold") is not None else 0.30)
+        run_dir = str(data.get("run_dir") or "").strip()
+        save_dir = Path(run_dir) if run_dir else DEFAULT_RUNS
+        save_raw = bool(data.get("save_raw_mask", True))
+        save_overlay = bool(data.get("save_overlay", False))
+        packed = get_engine().refine(
+            image_path=image_path,
+            bbox=list(bbox) if bbox else None,
+            points=points or None,
+            score_threshold=score,
+            save_dir=save_dir,
+            save_raw_mask=save_raw,
+            save_overlay=save_overlay,
+        )
+        return self._json_result(packed)
 
     def _segment(self, data: Dict[str, Any]) -> Dict[str, Any]:
         image_path = str(data.get("image_path") or "").strip()
@@ -151,19 +197,7 @@ class Sam3Handler(BaseHTTPRequestHandler):
             save_raw_mask=save_raw,
             save_overlay=save_overlay,
         )
-        return {
-            "status": "ok",
-            "prompt": packed["prompt"],
-            "image_path": packed["image_path"],
-            "image_size": packed["image_size"],
-            "instances": packed["instances"],
-            "overlay_path": packed.get("overlay_path"),
-            "result_json": packed.get("result_json"),
-            "exif_orientation": packed.get("exif_orientation"),
-            "pil_raw_size_wh": packed.get("pil_raw_size_wh"),
-            "normalized_size_wh": packed.get("normalized_size_wh"),
-            "applied_exif_transpose": packed.get("applied_exif_transpose"),
-        }
+        return self._json_result(packed)
 
 
 def main(argv: list[str] | None = None) -> int:

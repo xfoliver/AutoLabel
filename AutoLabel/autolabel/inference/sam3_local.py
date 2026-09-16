@@ -58,6 +58,54 @@ def nms_by_bbox(
     return kept
 
 
+DISCOVERY_FLOOR = 0.05
+
+
+def discovery_threshold(user_threshold: float, *, floor: float = DISCOVERY_FLOOR) -> float:
+    """SAM3 keep-gate. Never higher than ``floor`` so low-score classes still appear."""
+    try:
+        t = float(user_threshold)
+    except (TypeError, ValueError):
+        t = floor
+    if t <= 0:
+        return float(floor)
+    return float(min(t, floor))
+
+
+def filter_by_score(items: List[Dict[str, Any]], threshold: float) -> List[Dict[str, Any]]:
+    """Drop low scores, but never empty the list if every instance is below the slider."""
+    if threshold <= 0 or not items:
+        return items
+    kept: List[Dict[str, Any]] = []
+    for inst in items:
+        if not isinstance(inst, dict):
+            continue
+        score = inst.get("score")
+        if score is None:
+            kept.append(inst)
+            continue
+        try:
+            if float(score) >= float(threshold):
+                kept.append(inst)
+        except (TypeError, ValueError):
+            kept.append(inst)
+    return kept if kept else list(items)
+
+
+def relative_min_area(areas: Sequence[int], *, floor: int) -> int:
+    """When many similar-sized instances exist, drop fragments much smaller than typical.
+
+    A lone small object must not be wiped out — this only kicks in with ≥4 instances.
+    """
+    vals = [int(a) for a in areas if int(a) > 0]
+    if len(vals) < 4:
+        return int(floor)
+    ordered = sorted(vals)
+    typical = ordered[len(ordered) // 2 :]
+    median = typical[len(typical) // 2]
+    return max(int(floor), int(median * 0.20))
+
+
 def resolve_model_prompt(label_spec: LabelSpec) -> Tuple[str, str]:
     """Return (display_label, sam3_text_prompt)."""
     label = (label_spec.class_names[0] if label_spec.class_names else None) or "object"
@@ -94,7 +142,7 @@ def _load_mask(mask_path: str, fallback_hw: Tuple[int, int]) -> np.ndarray:
     if (mh, mw) == (h, w):
         return binary
     # Swapped (H,W) vs (W,H) is EXIF / axis confusion. NEVER stretch — that
-    # shears a 90°-oriented mask onto the display image (phone → chair).
+    # shears a 90°-oriented mask onto the display image.
     if (mh, mw) == (w, h):
         raise RuntimeError(
             f"SAM3 mask shape {(mh, mw)} is transposed vs image {(h, w)}. "
@@ -111,7 +159,7 @@ def _load_mask(mask_path: str, fallback_hw: Tuple[int, int]) -> np.ndarray:
 class Sam3LocalBackend(InferenceBackend):
     """HTTP client for the resident SAM3 worker."""
 
-    def __init__(self, backend_id: str = "sam3_local", options: Optional[Dict[str, Any]] = None):
+    def __init__(self, backend_id: str = "sam3_1_local", options: Optional[Dict[str, Any]] = None):
         self.id = backend_id
         self.options = options or {}
         host = str(self.options.get("host") or "127.0.0.1").strip() or "127.0.0.1"
@@ -120,9 +168,10 @@ class Sam3LocalBackend(InferenceBackend):
         self.base_url = base or f"http://{host}:{port}"
         self.host = host
         self.port = port
-        self.python_path = str(
-            self.options.get("python_path") or r"C:\dlcv\envs\sam3\python.exe"
-        )
+        from autolabel.engines import ENGINE_SAM31, sam3_version_for_engine
+        from autolabel.paths import resolve_python_path
+
+        self.python_path = str(resolve_python_path(self.options.get("python_path")))
         self.timeout = float(self.options.get("timeout") or 180)
         self.score_threshold = float(self.options.get("score_threshold") or 0.55)
         self.min_area = int(self.options.get("min_area") or 64)
@@ -130,6 +179,9 @@ class Sam3LocalBackend(InferenceBackend):
         self.nms_iou_threshold = float(self.options.get("nms_iou_threshold") or 0.7)
         self.save_raw_mask = bool(self.options.get("save_raw_mask", True))
         self.save_overlay = bool(self.options.get("save_overlay", True))
+        raw_version = self.options.get("sam3_version") or ENGINE_SAM31
+        self.sam3_version = sam3_version_for_engine(raw_version)
+        self.options["sam3_version"] = self.sam3_version
         self.debug_dir: Optional[Path] = None
         caps = self.options.get("capabilities") or {}
         self._caps = BackendCapabilities(
@@ -180,13 +232,51 @@ class Sam3LocalBackend(InferenceBackend):
         payload = {
             "image_path": str(path.resolve()),
             "prompt": prompt,
-            "score_threshold": self.score_threshold,
+            "score_threshold": discovery_threshold(self.score_threshold),
             "save_raw_mask": self.save_raw_mask,
             "save_overlay": self.save_overlay,
         }
         if self.debug_dir is not None:
             payload["run_dir"] = str(Path(self.debug_dir))
-        url = f"{self.base_url}/segment"
+        data = self._post("/segment", payload)
+        raw_instances = [x for x in (data.get("instances") or []) if isinstance(x, dict)]
+        raw_instances = nms_by_bbox(raw_instances, iou_threshold=self.nms_iou_threshold)
+        scored = filter_by_score(raw_instances, self.score_threshold)
+
+        pending: List[Tuple[InstancePred, int]] = []
+        for i, item in enumerate(scored, start=1):
+            score = item.get("score")
+            mask_path = item.get("mask_path")
+            if not mask_path:
+                continue
+            mask = _load_mask(str(mask_path), (h, w))
+            area = int(np.count_nonzero(mask))
+            if area < self.min_area:
+                continue
+            pending.append(
+                (
+                    InstancePred(
+                        instance_id=i,
+                        class_id=1,
+                        class_name=label,
+                        mask=mask,
+                        score=float(score) if score is not None else None,
+                    ),
+                    area,
+                )
+            )
+        area_floor = relative_min_area([a for _, a in pending], floor=self.min_area)
+        instances = [inst for inst, area in pending if area >= area_floor]
+
+        transform = TransformMeta.identity_for(w, h)
+        return Stage1Result(
+            instances=instances,
+            transform=transform,
+            raw=data,
+        )
+
+    def _post(self, path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        url = f"{self.base_url}{path}"
         try:
             resp = requests.post(url, json=payload, timeout=self.timeout)
         except requests.RequestException as e:
@@ -200,40 +290,35 @@ class Sam3LocalBackend(InferenceBackend):
                 msg = err.get("error") if isinstance(err, dict) else resp.text
             except Exception:
                 msg = resp.text
-            raise RuntimeError(f"SAM3 /segment failed ({resp.status_code}): {msg}")
+            raise RuntimeError(f"SAM3 {path} failed ({resp.status_code}): {msg}")
         data = resp.json()
-        raw_instances = list(data.get("instances") or [])
-        raw_instances = nms_by_bbox(raw_instances, iou_threshold=self.nms_iou_threshold)
+        return data if isinstance(data, dict) else {"raw": data}
 
-        instances: List[InstancePred] = []
-        for i, item in enumerate(raw_instances, start=1):
-            if not isinstance(item, dict):
-                continue
-            score = item.get("score")
-            area = int(item.get("area") or 0)
-            mask_path = item.get("mask_path")
-            if not mask_path:
-                continue
-            mask = _load_mask(str(mask_path), (h, w))
-            area = int(np.count_nonzero(mask))
-            if area < self.min_area:
-                continue
-            instances.append(
-                InstancePred(
-                    instance_id=i,
-                    class_id=1,
-                    class_name=label,
-                    mask=mask,
-                    score=float(score) if score is not None else None,
-                )
-            )
-
-        transform = TransformMeta.identity_for(w, h)
-        return Stage1Result(
-            instances=instances,
-            transform=transform,
-            raw=data,
-        )
+    def refine(
+        self,
+        image_path: str | Path,
+        *,
+        bbox: Optional[Sequence[float]] = None,
+        points: Optional[Sequence[Sequence[float]]] = None,
+        run_dir: Optional[Path] = None,
+        score_threshold: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """Ask the worker to segment from a box / points (no text prompt)."""
+        path = Path(image_path)
+        payload: Dict[str, Any] = {
+            "image_path": str(path.resolve()),
+            "score_threshold": float(score_threshold if score_threshold is not None else min(self.score_threshold, 0.35)),
+            "save_raw_mask": True,
+            "save_overlay": False,
+        }
+        if bbox:
+            payload["bbox"] = [float(x) for x in list(bbox)[:4]]
+        if points:
+            payload["points"] = [[float(p[0]), float(p[1])] for p in points if len(p) >= 2]
+        dest = run_dir if run_dir is not None else self.debug_dir
+        if dest is not None:
+            payload["run_dir"] = str(Path(dest))
+        return self._post("/refine", payload)
 
 
 @register_backend("sam3_local")

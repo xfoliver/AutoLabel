@@ -1,9 +1,9 @@
 {
-  "version": "2025.9.1.0",
+  "version": "2026.7.17.0",
   "flags": {},
   "shapes": [
     {
-      "label": "手机",
+      "label": "phone",
       "points": [
         [
           338.0,
@@ -107,11 +107,11 @@
         ],
         [
           365.0,
-          178.0
+          179.0
         ],
         [
           366.0,
-          177.0
+          178.0
         ],
         [
           366.0,
@@ -136,13 +136,14 @@
       "flags": {
         "autolabel": true,
         "quality_risk": 0.0,
-        "score_source": "none",
-        "instance_source": "model"
+        "score_source": "model",
+        "instance_source": "model",
+        "model_confidence": 0.91015625
       },
       "mask": null
     },
     {
-      "label": "手机",
+      "label": "phone",
       "points": [
         [
           394.0,
@@ -241,8 +242,8 @@
           213.0
         ],
         [
-          453.0,
-          209.0
+          455.0,
+          210.0
         ],
         [
           449.0,
@@ -261,16 +262,12 @@
           197.0
         ],
         [
-          428.0,
+          429.0,
+          191.0
+        ],
+        [
+          429.0,
           190.0
-        ],
-        [
-          428.0,
-          189.0
-        ],
-        [
-          427.0,
-          189.0
         ],
         [
           425.0,
@@ -289,7 +286,15 @@
           188.0
         ],
         [
+          417.0,
+          189.0
+        ],
+        [
           414.0,
+          189.0
+        ],
+        [
+          413.0,
           190.0
         ],
         [
@@ -297,19 +302,11 @@
           191.0
         ],
         [
-          405.0,
-          193.0
-        ],
-        [
-          403.0,
-          193.0
-        ],
-        [
           400.0,
           195.0
         ],
         [
-          398.0,
+          397.0,
           195.0
         ]
       ],
@@ -318,9 +315,10 @@
       "shape_type": "polygon",
       "flags": {
         "autolabel": true,
-        "quality_risk": 0.01,
-        "score_source": "none",
-        "instance_source": "model"
+        "quality_risk": 0.005,
+        "score_source": "model",
+        "instance_source": "model",
+        "model_confidence": 0.5625
       },
       "mask": null
     }
@@ -328,5 +326,8 @@
   "imagePath": "8aa51d0295d3040101964168422c0396_10.jpg",
   "imageData": null,
   "imageHeight": 640,
-  "imageWidth": 480
+  "imageWidth": 480,
+  "img_name_list": [
+    "8aa51d0295d3040101964168422c0396_10.jpg"
+  ]
 }
